@@ -1,0 +1,8 @@
+/runtime/
+/release/vendor/
+/release/dist/
+/library-sync.json
+/.secrets/
+/reports/
+__pycache__/
+*.pyc

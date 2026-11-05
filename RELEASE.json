@@ -1,0 +1,9 @@
+{
+  "version": "0.2.0-beta.8",
+  "status": "public-beta",
+  "license": "LicensePending",
+  "platform": "windows-x86_64",
+  "portable_defaults": true,
+  "git": "system Git required; explicit installation setup",
+  "real_sync_verified": false
+}

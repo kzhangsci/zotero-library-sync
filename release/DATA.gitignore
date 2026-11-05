@@ -1,0 +1,11 @@
+.secrets/
+reports/_cache/
+_cache/
+mineru_out/
+output/
+.zcode_work/
+.codex_work/
+.claude_work/
+__pycache__/
+*.pyc
+*.dpapi

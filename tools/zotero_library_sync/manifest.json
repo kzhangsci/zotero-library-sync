@@ -1,0 +1,14 @@
+{
+  "manifest_version": 2,
+  "name": "Library Sync 文献同步",
+  "version": "0.2.0-beta.8",
+  "description": "通过本机 bridge 预演、确认并查看 Zotero 到 Obsidian Library 的同步。",
+  "applications": {
+    "zotero": {
+      "id": "library-sync@local.invalid",
+      "update_url": "https://library-sync.invalid/updates.json",
+      "strict_min_version": "10.0",
+      "strict_max_version": "10.0.*"
+    }
+  }
+}

@@ -1,0 +1,387 @@
+{
+  "schema_version": 1,
+  "export": "explicit-allowlist",
+  "git_history_included": false,
+  "files": [
+    {
+      "path": "tools/attachments_audit.py",
+      "sha256": "5395da95ec2201ce7ffb2499100e12e06b1013785410cda1e8d2819c3de9bd50",
+      "bytes": 27065
+    },
+    {
+      "path": "tools/attachments_normalize_prep.py",
+      "sha256": "3c767d73cdefed9c14f5a0023c9631f35ceb6be39f0e763579f896408e5f44f0",
+      "bytes": 16297
+    },
+    {
+      "path": "tools/citekey_reformat_prep.py",
+      "sha256": "d0337818f19fbdc7a3a44d999d8a8240383f1a9369e91552c3f90ace26c4f0d1",
+      "bytes": 61
+    },
+    {
+      "path": "tools/claude_client.py",
+      "sha256": "debcee1d78b8a2434123fe0f9837fb2c5dbeea850a1f065d229b81509a2b7e02",
+      "bytes": 410
+    },
+    {
+      "path": "tools/codex_client.py",
+      "sha256": "debcee1d78b8a2434123fe0f9837fb2c5dbeea850a1f065d229b81509a2b7e02",
+      "bytes": 410
+    },
+    {
+      "path": "tools/common.py",
+      "sha256": "ca719d20436390b93ff0df4248ade470ac2e47a77e6cac86987faed0c0990921",
+      "bytes": 12827
+    },
+    {
+      "path": "tools/fix_latex_spacing.py",
+      "sha256": "3b02cedda39b51654a56ac2e9d15e5cac3eae58ed6df781eb25e0fd19bbf277d",
+      "bytes": 9767
+    },
+    {
+      "path": "tools/glm_client.py",
+      "sha256": "debcee1d78b8a2434123fe0f9837fb2c5dbeea850a1f065d229b81509a2b7e02",
+      "bytes": 410
+    },
+    {
+      "path": "tools/glm_concurrency.py",
+      "sha256": "595529e46a9a6a98fcea080ede495f3642f69e8382d26be82b0fdb6168b85dea",
+      "bytes": 12380
+    },
+    {
+      "path": "tools/intake_new.py",
+      "sha256": "2a263350ab56dd04f8cc08fce18ea73b6cf8dbbd4bcf1c06979e6becf3bbdd37",
+      "bytes": 737
+    },
+    {
+      "path": "tools/library_control.py",
+      "sha256": "e35c81d19041bf03ded8ef1a4e8377d49fff3544dc6d7689d46d97c266030deb",
+      "bytes": 31342
+    },
+    {
+      "path": "tools/library_discovery.py",
+      "sha256": "255070c87a893bd9d6b23453882082ec4cda54d32490aa1064745603d5efd8bf",
+      "bytes": 6422
+    },
+    {
+      "path": "tools/library_intake.py",
+      "sha256": "b2e12d8cc22fb92afc013b7995fcba53b3fdb76c170e86ab6f7eb7f2f09e3a6d",
+      "bytes": 35498
+    },
+    {
+      "path": "tools/library_paths.py",
+      "sha256": "7661b18cd58caf36252eb947ab0a3c72cad5594afd24f060f96152d32a3eeef8",
+      "bytes": 4334
+    },
+    {
+      "path": "tools/library_plugin_bridge.py",
+      "sha256": "de4519c48cd8fa8a2795cc7588fb959957dd46604c009ac6c4039df023c63281",
+      "bytes": 26467
+    },
+    {
+      "path": "tools/library_power.py",
+      "sha256": "f412ab5738dcebcd909a30b8c7b181cd297bc6dfb8a3818fe2fc2a7aecf64d72",
+      "bytes": 3051
+    },
+    {
+      "path": "tools/library_progress.py",
+      "sha256": "be9f6ae29ae95dd3776b15a4a5798fc13aec0afdfc2b612d778d07b599f30d0b",
+      "bytes": 25105
+    },
+    {
+      "path": "tools/library_qa.py",
+      "sha256": "b9344b822fdc00ea52594d6ed13fe2807f4d7ce24bb970346421e90e95a39371",
+      "bytes": 26530
+    },
+    {
+      "path": "tools/library_resume.py",
+      "sha256": "961417b06b8f2ce46db6a941e48b0e7f350e54a6ebb2a93f0ca6907431f9846b",
+      "bytes": 21018
+    },
+    {
+      "path": "tools/library_sync.py",
+      "sha256": "4ee5e5427d262c52a38ae477f24d108da9b1f4b6b7f206c43c3889be1dcc44c5",
+      "bytes": 66841
+    },
+    {
+      "path": "tools/library_source.py",
+      "sha256": "a1f53bbc8e9866d83f23220348f1fffa4531b74bde6a49a438576fe1a0f33561",
+      "bytes": 32530
+    },
+    {
+      "path": "tools/library_refresh.py",
+      "sha256": "5c01350b98b7031100ac3622f4ed5ce519a96d3b017ae46b8254829a41aeda9c",
+      "bytes": 15089
+    },
+    {
+      "path": "tools/mineru_client.py",
+      "sha256": "1e2afac972084164a048a0a5b143d6e0a1cd78fbdee0e54d31ee73875b662e4b",
+      "bytes": 10684
+    },
+    {
+      "path": "tools/mineru_credentials.py",
+      "sha256": "4847e302608a6b70a1ea7589837314879a2035393712b8f779a1c552c0064338",
+      "bytes": 5475
+    },
+    {
+      "path": "tools/model_api.py",
+      "sha256": "2fe5ac089f0e907660625f29bb6504a2c385c69319f1cab135d1db01e519b5e1",
+      "bytes": 42610
+    },
+    {
+      "path": "tools/model_catalog.py",
+      "sha256": "6ecbd4166fbc4df074b07bbacc9ec4afc98cae807956c22586defe90acdc3781",
+      "bytes": 11549
+    },
+    {
+      "path": "tools/qc_glm.py",
+      "sha256": "fe0480fa9fa97a57673d98f32e62b0ad1ac292389fab2e0a05d72c62d7d62400",
+      "bytes": 18575
+    },
+    {
+      "path": "tools/sync.py",
+      "sha256": "897b8858e88a28d345ebf290fe4a0895f4b14a5c77970f0f6a015b9f7413819b",
+      "bytes": 49796
+    },
+    {
+      "path": "tools/zotero_local.py",
+      "sha256": "0a24570c9dc1400b302c27841918093b13d38f5915e0732307aa39716219878f",
+      "bytes": 61135
+    },
+    {
+      "path": "tools/zotero_library_sync/bootstrap.js",
+      "sha256": "e62a0fd8bdda40826eed8b2c121fec379e794cf351660574996fc59366d5f49c",
+      "bytes": 1510
+    },
+    {
+      "path": "tools/zotero_library_sync/bridge-client.js",
+      "sha256": "9e05e9f41a05b9f20f0b097d984f143061c849a2f0aa5bf0c2b62560584a3d59",
+      "bytes": 45972
+    },
+    {
+      "path": "tools/zotero_library_sync/manifest.json",
+      "sha256": "900cfd2cf4ae8f5df4ac51acbcf14c901122786960242f57e94b8ec45ff73737",
+      "bytes": 429
+    },
+    {
+      "path": "tools/zotero_library_sync/panel.css",
+      "sha256": "dbd12b177a0b63b9c5ee9c610227cf3e7f86233b003b30647539122ec0f0ed7f",
+      "bytes": 7660
+    },
+    {
+      "path": "tools/zotero_library_sync/panel.js",
+      "sha256": "108d201e075f394897bad8540071622f5f8ff2002900e647c40511ad6382080c",
+      "bytes": 87882
+    },
+    {
+      "path": "tools/zotero_library_sync/panel.xhtml",
+      "sha256": "673a7294b6c150c168e82c49b677112fe5d05a69cdbb707a8691214efd69f18b",
+      "bytes": 34008
+    },
+    {
+      "path": "tools/zotero_library_sync/picker.js",
+      "sha256": "fc5b5fd2c7739961200c7c1e53f20770519e36eab692727a6c126fcba35b66fd",
+      "bytes": 9905
+    },
+    {
+      "path": "tools/zotero_library_sync/prefs.js",
+      "sha256": "eec2ead87562f49c1c2cb2706033409e3aa6aa80fd7ff8eb8c250a12859b9184",
+      "bytes": 177
+    },
+    {
+      "path": "tools/zotero_library_sync/runtime.js",
+      "sha256": "6dd5acddc6ac25853ade30178276d1ed5f9a16c4d14b1848b288a0883d9215e6",
+      "bytes": 13737
+    },
+    {
+      "path": "tools/zotero_library_sync/tests/helpers.cjs",
+      "sha256": "bf7191df372fe57ded29ef16f45aa02f2ec648484f595e41e93cc73372f328f9",
+      "bytes": 7769
+    },
+    {
+      "path": "tools/zotero_library_sync/tests/ui.test.cjs",
+      "sha256": "3c01dc1124bf77b04e9de933180bea2cc023a7b3c3021c100076926feaaf66fe",
+      "bytes": 80137
+    },
+    {
+      "path": "tools/zotero_library_sync/tests/picker.test.cjs",
+      "sha256": "eeee360365736422a537d64165abffdcdeb314233398295f3a0a84f58bd3b5fa",
+      "bytes": 21405
+    },
+    {
+      "path": "tools/zotero_library_sync/tests/protocol.test.cjs",
+      "sha256": "7ce8d769efdd0694a4d7045f7b0a759e3f2eeddde0e42ade74b7d7d0e622aeb0",
+      "bytes": 25480
+    },
+    {
+      "path": "tools/zotero_library_sync/tests/runtime.test.cjs",
+      "sha256": "a9baa465f5ca837eaa38dfff18ad131295a67b6ad8e802a5158cf4c7cfeb3b9b",
+      "bytes": 17064
+    },
+    {
+      "path": "tools/zotero_library_sync/tests/model-parameters.test.cjs",
+      "sha256": "5acbdf29ebf21bec3d82f32944409f0469e067992700fd9de6d284b6a2722d8f",
+      "bytes": 12802
+    },
+    {
+      "path": "tools/zotero_library_sync/tests/source-refresh.test.cjs",
+      "sha256": "f3215b2b1bf54790cdd12b7450bc1718d0df8938d3101f7a693af546143f7f1d",
+      "bytes": 7310
+    },
+    {
+      "path": "tools/zotero_library_sync/tests/model-catalog.test.cjs",
+      "sha256": "672240b6d3d215e9c9dff0927f6c9d9a066af0a0546d2c3c9f0df51f7003e794",
+      "bytes": 25997
+    },
+    {
+      "path": "tools/zotero_library_sync/tests/tongji.test.cjs",
+      "sha256": "24fd88d1864c29d12ee71be098cc6e79388b28e50e250bd79cbd4d43c0b28981",
+      "bytes": 12533
+    },
+    {
+      "path": "tools/notify_library.ps1",
+      "sha256": "1575978ec2d0821edc2aec55f8d83a10e124bed61ae47f4c1a5230618731880b",
+      "bytes": 768
+    },
+    {
+      "path": "tools/build_zotero_plugin.py",
+      "sha256": "ac176a520bbf3aeed343bcf7e882dca91d5c1da1647974cc8955e95c1630a4f9",
+      "bytes": 5432
+    },
+    {
+      "path": "tools/build_library_release.py",
+      "sha256": "4b382bb8eeb2a0cc5eca5e0c2e7e35193b04f20c13a1e41a86b35b74dba82232",
+      "bytes": 7604
+    },
+    {
+      "path": "tools/test_library_release.py",
+      "sha256": "b4e096370ee37e5c2e4f05ba66c3704c9261bacdfc5e1e562f49aeef0edbb02a",
+      "bytes": 13540
+    },
+    {
+      "path": "tools/test_library_progress.py",
+      "sha256": "23727a83cd6841e0af175dfba6c80498bae1ea4f615f0c4c9b2aff285b5c8b35",
+      "bytes": 24740
+    },
+    {
+      "path": "tools/test_qc_protocol.py",
+      "sha256": "2c30515e9c76bff826ce3cc4c0148a010e647f550fd2149118c9eac99ce79305",
+      "bytes": 9685
+    },
+    {
+      "path": "tools/test_model_pipeline.py",
+      "sha256": "13c247837d5aec1e4408de13c3ac83bc8021f08fb0cda805c2b908c34e9c75ba",
+      "bytes": 23322
+    },
+    {
+      "path": "tools/test_library_source.py",
+      "sha256": "8af27008a287b1a35f3bc0613c55e4b3ebe9d822dca568a7260994d3fc0d4a9e",
+      "bytes": 35744
+    },
+    {
+      "path": "tools/test_model_catalog.py",
+      "sha256": "6da22835b3c323b08170e45493eeb961a38cd960a9215d84e5c72318e72c3061",
+      "bytes": 26426
+    },
+    {
+      "path": "tools/test_model_api.py",
+      "sha256": "d8e05f3a98e047662b762e65d07b866996eb88c312fd64fd8d8af105387ad8e8",
+      "bytes": 49377
+    },
+    {
+      "path": "tools/test_model_profiles.py",
+      "sha256": "08e84c218059545e7aa5515d6652b067664e5cab90e1f783c333b32a84ed2702",
+      "bytes": 42314
+    },
+    {
+      "path": "release/test_export_core.py",
+      "sha256": "5a27133dc3882c9521f977e90ac8b8573e3bb28ce3184da835cc229fdb0beff0",
+      "bytes": 4512
+    },
+    {
+      "path": "release/BBT_SETUP.md",
+      "sha256": "b566d9e906eab30b3d423c4a824be21eeeec7b88b909c368866c8000e8de2465",
+      "bytes": 2579
+    },
+    {
+      "path": "release/journal_acronyms.example.csv",
+      "sha256": "a333c2db795431c0c950fe9241842784705141e405783f6c0a11b60373d40400",
+      "bytes": 92
+    },
+    {
+      "path": "release/README.md",
+      "sha256": "c8f7e3b7732bf959a3e2271c4b4b56d55dd4defc6208b73a76b4036e3c8c8d4d",
+      "bytes": 7637
+    },
+    {
+      "path": "release/LICENSE_PENDING.md",
+      "sha256": "f55701bb93a4938ee26a8d677b41c2c406fdc2d15053d7a5b6d47a154d2696ff",
+      "bytes": 273
+    },
+    {
+      "path": "release/PRIVACY.md",
+      "sha256": "675b6f830e4416dfc9e3b4a896b750ce62e829b1ac837e99045090d8586039d0",
+      "bytes": 1472
+    },
+    {
+      "path": "release/BUILD.md",
+      "sha256": "9c3c231e2e5a1ded5a67741a462976a4f273d9cb015bdfd6579b9814b24c41f8",
+      "bytes": 2030
+    },
+    {
+      "path": "release/CHANGELOG.md",
+      "sha256": "729b7c78a55d4d01768509ac1edc15da2d074fcbe8670336b6d71d3f355ad234",
+      "bytes": 651
+    },
+    {
+      "path": "release/setup.ps1",
+      "sha256": "49567493ff6ce0929f95d7e23aef8d69a047ca5136b7dc8043e93523201b06b2",
+      "bytes": 1556
+    },
+    {
+      "path": "release/install.py",
+      "sha256": "d84496adf154564c67b9b2e3b7d3de076fa4b15706255044a8b6289d7ef69bc9",
+      "bytes": 9768
+    },
+    {
+      "path": "release/offline_smoke.py",
+      "sha256": "9c1085de790f701117efe49036e9b26f538735c65f8286c3dc7b4cd1da21f111",
+      "bytes": 4710
+    },
+    {
+      "path": "release/fetch_dependencies.py",
+      "sha256": "e8077e0583afacc203df7ed7f6b153b8302ac35b5c2e5c95106c9a8024c605a5",
+      "bytes": 5509
+    },
+    {
+      "path": "release/export_rules.py",
+      "sha256": "f150a7411805c25b549c1d6e1cf9c7b1610a820395716145428f7f3d2a53483b",
+      "bytes": 5301
+    },
+    {
+      "path": "release/dependencies.lock.json",
+      "sha256": "ae12d8c3acaf2298b77da6c13d8e4e55411058297a489b8eb44d603600ebabe7",
+      "bytes": 5494
+    },
+    {
+      "path": "release/requirements.txt",
+      "sha256": "28f424ccc557fc1773a0bfa209625fe430295bd068a7e035d6dd85a6f3c9c000",
+      "bytes": 219
+    },
+    {
+      "path": "release/DATA.gitignore",
+      "sha256": "7f1a47ff0f3ff3a7ee3452e98cab7d8e8ace4c07bf54c1d3f16bbd11f17ac51e",
+      "bytes": 121
+    },
+    {
+      "path": "release/LIBRARY.gitignore",
+      "sha256": "9d16307fca108de3d613dc54286db782323563f49a5c2f508d166f55522bffb0",
+      "bytes": 87
+    },
+    {
+      "path": "release/THIRD_PARTY_SOURCE_GUIDE.md",
+      "sha256": "4d71a4f6c005ab2d3d193f949a78a320d5009210635b4ea06856cb06b61a2bb3",
+      "bytes": 2385
+    }
+  ]
+}

@@ -1,0 +1,153 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<window xmlns="http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul"
+        xmlns:h="http://www.w3.org/1999/xhtml" id="library-sync-window"
+        windowtype="library-sync:panel" title="Library Sync · 文献同步" width="1120" height="820">
+  <h:link rel="stylesheet" href="chrome://library-sync/content/panel.css?v=0.2.0-beta.8"/>
+  <script src="chrome://library-sync/content/bridge-client.js?v=0.2.0-beta.8"/>
+  <script src="chrome://library-sync/content/picker.js?v=0.2.0-beta.8"/>
+  <script src="chrome://library-sync/content/panel.js?v=0.2.0-beta.8"/>
+  <h:main id="panel-scroll" tabindex="0" aria-label="Library Sync 可滚动设置面板">
+    <h:header><h:div><h:h1>Library Sync <h:span>文献同步</h:span></h:h1>
+      <h:p>v0.2.0-beta.8 · 预演 → 确认 → 后台执行。请保持 Zotero 运行，以提供本地 API。</h:p></h:div>
+      <h:div class="actions"><h:button id="jump-models" type="button">模型设置 ↓</h:button>
+      <h:button id="close-panel" type="button">关闭面板</h:button></h:div></h:header>
+    <h:nav class="page-tabs" aria-label="工作区域"><h:button id="nav-sync" type="button" aria-pressed="true">同步</h:button><h:button id="nav-task" type="button" aria-pressed="false">任务</h:button><h:button id="nav-settings" type="button" aria-pressed="false">设置</h:button></h:nav>
+    <h:p id="message" role="status" aria-live="polite">正在读取连接状态…</h:p>
+    <h:section aria-labelledby="connection-title">
+      <h:h2 id="connection-title">连接与路径</h:h2>
+      <h:details id="paths-details"><h:summary>路径设置</h:summary><h:div class="paths"><h:label for="repo">后台程序目录（Repo）</h:label><h:input id="repo" type="text" spellcheck="false"/>
+        <h:label for="pythonw">后台 Python（pythonw.exe）</h:label><h:input id="pythonw" type="text" spellcheck="false"/></h:div>
+      <h:p class="hint">程序目录须包含 tools\library_plugin_bridge.py，不是 Zotero 数据或 Obsidian 文献目录。pythonw.exe 用于隐藏命令行窗口、运行同步后台。只更新 XPI 不会安装这两个组件；已有用户沿用原路径，新用户先安装 Windows 后台包。</h:p>
+      <h:div class="actions"><h:div class="action-control"><h:button id="save-paths" type="button">保存路径</h:button><h:small id="save-paths-reason" class="disabled-reason" hidden="hidden"/></h:div>
+        </h:div></h:details><h:div class="actions"><h:div class="action-control"><h:button id="connect" type="button">连接 / 启动服务</h:button><h:small id="connect-reason" class="disabled-reason" hidden="hidden"/></h:div><h:span id="connection">尚未连接</h:span></h:div>
+      <h:p class="hint">仅保存这两个路径。启动服务不会开始同步；确认已有服务可用时直接复用。</h:p>
+    </h:section>
+    <h:section id="sync-page" aria-labelledby="scope-title">
+      <h:h2 id="scope-title">文献范围与预演</h:h2>
+      <h:div class="actions"><h:div class="action-control"><h:button id="select-items" type="button">选择当前条目</h:button><h:small id="select-items-reason" class="disabled-reason" hidden="hidden"/></h:div>
+        <h:div class="action-control"><h:button id="discover" type="button">检测新增（任意分类）</h:button><h:small id="discover-reason" class="disabled-reason" hidden="hidden"/></h:div><h:span id="scope">尚未选择文献范围</h:span></h:div>
+      <h:pre id="selection" class="compact">在 Zotero 中选择文献，再点击“选择当前条目”。</h:pre>
+      <h:div class="action-control"><h:label class="translation-choice"><h:input id="refresh-source" type="checkbox" aria-describedby="refresh-source-help refresh-source-reason"/> 重新检测 / 更换全文 PDF</h:label><h:small id="refresh-source-reason" class="disabled-reason" hidden="hidden"/></h:div>
+      <h:p id="refresh-source-help" class="hint">补全文或更换 PDF：在 Zotero 选中新 PDF 附件，点击“选择当前条目”，勾此项后预演；选父文献时由后台检测唯一的新 PDF。仅选择模式可用，自动发现会清除此项。旧 PDF 和批注保留为历史版本，旧原文 / 译文 / 图片移入可恢复归档，笔记保留；PDF 不变时不重跑。预演不会执行更换，核对后仍需“确认开始”。</h:p>
+      <h:details><h:summary>批次高级选项</h:summary><h:div class="controls">
+        <h:label>文献并行 workers <h:input id="workers" type="number" min="1" max="4" step="1" value="1"/></h:label>
+        <h:div class="chunk-choice"><h:label for="chunk-parallel">分块并行</h:label><h:div class="picker"><h:div class="picker-line"><h:input id="chunk-parallel" type="text" value="1" placeholder="" autocomplete="off" spellcheck="false" readonly="readonly"/><h:button id="chunk-parallel-toggle" type="button" aria-label="选择选项" aria-expanded="false">▾</h:button></h:div><h:div id="chunk-parallel-options" class="picker-options" role="listbox" hidden="hidden"/></h:div></h:div>
+        <h:label>本次上限 <h:input id="limit" type="number" min="0" max="25" step="1" value="0"/></h:label>
+        <h:span class="hint">0 = 不额外限制；按控制器预演决定。</h:span>
+      </h:div></h:details>
+      <h:p><h:label class="translation-choice"><h:input id="translate" type="checkbox" checked="checked"/> 本次生成中文翻译（默认开启）</h:label></h:p>
+      <h:p class="hint">取消勾选：只生成原文、质检与笔记，仍自动校验、索引并提交 Git；结果在任务页与报告显示，不发送桌面通知。中文原文自动跳过翻译；不删除已有译文，不修改 Zotero 标签。</h:p>
+      <h:div class="actions"><h:div class="action-control"><h:button id="preview" type="button" disabled="disabled">预演所选文献</h:button><h:small id="preview-reason" class="disabled-reason" hidden="hidden"/></h:div>
+        <h:div class="action-control"><h:button id="start" type="button" class="primary" disabled="disabled">确认开始</h:button><h:small id="start-reason" class="disabled-reason" hidden="hidden"/></h:div>
+        <h:span id="operation">尚无预演</h:span></h:div>
+      <h:p id="selection-notice" class="hint">逐篇勾选是否包含与翻译；取消翻译不会删除已有译文。</h:p><h:p id="deferred-notice" class="hint" role="status" aria-live="polite" hidden="hidden"/>
+      <h:details><h:summary>预演原文</h:summary><h:pre id="preview-text">预演不会启动同步。完成后请核对待执行和暂缓条目。</h:pre></h:details>
+      <h:div class="table-wrap"><h:table><h:thead><h:tr><h:th>包含</h:th><h:th>翻译</h:th><h:th>文献 / key</h:th><h:th>题名</h:th><h:th>说明</h:th></h:tr></h:thead><h:tbody id="preview-rows"/></h:table></h:div>
+    </h:section>
+    <h:section id="task-page" aria-labelledby="status-title" hidden="hidden">
+      <h:div class="section-heading"><h:h2 id="status-title" tabindex="-1">当前任务</h:h2><h:div class="action-control"><h:button id="refresh" type="button">刷新状态</h:button><h:small id="refresh-reason" class="disabled-reason" hidden="hidden"/></h:div></h:div>
+      <h:div class="actions"><h:div class="action-control"><h:button id="current-task" type="button">返回当前任务</h:button><h:small id="current-task-reason" class="disabled-reason" hidden="hidden"/></h:div><h:div class="action-control"><h:button id="pause" type="button">完成当前步骤后暂停</h:button><h:small id="pause-reason" class="disabled-reason" hidden="hidden"/></h:div><h:div class="action-control"><h:button id="resume" type="button">继续未完成步骤</h:button><h:small id="resume-reason" class="disabled-reason" hidden="hidden"/></h:div><h:div class="action-control"><h:button id="resume-finalize" type="button">仅重试收尾</h:button><h:small id="resume-finalize-reason" class="disabled-reason" hidden="hidden"/></h:div></h:div>
+      <h:div class="action-control"><h:button id="view-resumed" type="button" hidden="hidden">查看已派发的恢复任务</h:button><h:small id="view-resumed-reason" class="disabled-reason" hidden="hidden"/></h:div><h:p id="task-notice" role="status" aria-live="polite"/><h:pre id="status-error" role="status" hidden="hidden"/><h:div class="action-control"><h:button id="copy-status" type="button" hidden="hidden" aria-describedby="status-select-help">复制诊断（脱敏）</h:button><h:small id="copy-status-reason" class="disabled-reason" hidden="hidden"/></h:div><h:p class="hint" id="status-select-help">状态与诊断文本可用鼠标选中、全选和键盘复制；也可点击“复制诊断”一键复制脱敏摘要（不含任何 Key）。暂停可能等待整篇 QC / 翻译步骤完成；不会终止进程。</h:p>
+      <h:p id="summary">尚未读取状态</h:p><h:p id="report-path" class="path">报告路径：尚未记录</h:p>
+      <h:div class="table-wrap"><h:table><h:thead><h:tr><h:th>文献 / key</h:th><h:th>题名</h:th><h:th>阶段</h:th><h:th>阶段耗时</h:th><h:th>验收 / 说明</h:th></h:tr></h:thead><h:tbody id="status-rows"/></h:table></h:div>
+      <h:details><h:summary>冻结配置与运行详情</h:summary><h:pre id="frozen-config">暂无本任务配置。</h:pre><h:pre id="status-text">每 3 秒只读刷新；关闭面板后后台 worker 继续。</h:pre></h:details>
+      <h:div class="section-heading"><h:h3>最近任务</h:h3><h:div class="action-control"><h:button id="refresh-history" type="button">刷新历史</h:button><h:small id="refresh-history-reason" class="disabled-reason" hidden="hidden"/></h:div></h:div><h:p id="history-notice" class="hint">连接后只读加载最近任务。</h:p><h:div class="table-wrap"><h:table><h:thead><h:tr><h:th>任务</h:th><h:th>状态 / 阶段</h:th><h:th>开始 / 结束</h:th><h:th>操作</h:th></h:tr></h:thead><h:tbody id="history-rows"/></h:table></h:div>
+    </h:section>
+    <h:section id="settings-page" aria-labelledby="models-title" hidden="hidden">
+      <h:h2 id="models-title" tabindex="-1">模型设置</h:h2><h:p id="config-state">尚未读取配置。无配置时仍可查看运行状态。</h:p>
+      <h:p id="draft-state" class="hint"/>
+      <h:details><h:summary>参数说明与习惯预设来源</h:summary>
+        <h:p class="hint">QC 负责原文质检，ZH 负责中文翻译，两者独立设置。以下为插件内置的习惯预设模板（命名参考 ZCode / DeepSeek Harness「dsh」的常见用法）；不读取、不同步本机已装客户端的实时配置、账号或凭据，也不代表客户端当前配置，请按自身情况确认。只有点击“填入预设（保存后生效）”才覆盖当前角色草稿，不改另一角色；不会自动保存或启动任务，不读取其他客户端文件或凭据。</h:p>
+        <h:p class="hint">预设的 thinking=enabled 依据官方说明，32768 输出上限及 1500 秒超时沿用本插件初始值，不代表客户端当前参数。预设使用官方 Chat Completions 地址；Anthropic 端点不能直接套用，Key 需在本插件独立配置。</h:p>
+        <h:p class="hint">GLM-5.3 官方默认：thinking=enabled（不支持 disabled），reasoning_effort=max（可选 low / high / max），max_tokens=65536；最大输出 131072，上下文单独为 1M。temperature=1.0、top_p=0.95、do_sample=true；留空附加参数时由接口采用默认值。1500 秒是插件请求超时，不是模型官方参数默认。打开或刷新不会自动套用预设；改变预设选择也不会改表单。点击填写仅覆盖当前角色草稿，需另点“保存模型配置”才生效。</h:p>
+        <h:p class="hint">官方文档（2026-10-26 核对）：<h:button id="docs-glm53" type="button">GLM-5.3 模型与上下文</h:button> · <h:button id="docs-glm-request" type="button">GLM 请求参数</h:button> · <h:button id="docs-glm-thinking" type="button">GLM 思考与 effort</h:button> · <h:button id="docs-glm-params" type="button">GLM 参数与输出上限</h:button> · <h:button id="docs-deepseek-thinking" type="button">DeepSeek 思考</h:button> · <h:button id="docs-deepseek-request" type="button">DeepSeek 请求参数</h:button> · <h:button id="docs-deepseek-context" type="button">DeepSeek 上下文与输出</h:button>。以下模型说明仅适用于已识别的官方地址；自定义服务请核对其文档。</h:p>
+      </h:details><h:div class="model-grid">
+        <h:fieldset><h:legend>原文质检 · QC</h:legend>
+          <h:div class="form-row"><h:label for="qc-provider">服务商 / Key 来源</h:label><h:div class="picker"><h:div class="picker-line"><h:input id="qc-provider" aria-describedby="qc-provider-help" type="text" value="glm" placeholder="glm / deepseek / tongji" autocomplete="off" spellcheck="false"/><h:button id="qc-provider-toggle" type="button" aria-label="选择选项" aria-expanded="false">▾</h:button></h:div><h:div id="qc-provider-options" class="picker-options" role="listbox" hidden="hidden"/></h:div></h:div>
+          <h:div class="form-row"><h:label for="qc-model">模型</h:label><h:div class="picker"><h:div class="picker-line"><h:input id="qc-model" aria-describedby="qc-model-help" type="text" value="" placeholder="搜索候选或直接填写模型 ID" autocomplete="off" spellcheck="false"/><h:button id="qc-model-toggle" type="button" aria-label="选择选项" aria-expanded="false">▾</h:button></h:div><h:div id="qc-model-options" class="picker-options" role="listbox" hidden="hidden"/></h:div></h:div>
+
+          <h:p class="hint" id="qc-provider-help">决定使用本插件保存的哪份 Key：glm 为智谱，deepseek 为 DeepSeek，tongji 为同济校内 API；模型和 API 地址需与该 Key 的服务一致。</h:p>
+          <h:p class="hint" id="qc-model-help">请填接口接受的 API ID；候选展示名 / 版本名仅供识别，不作为请求 model。获取列表不改当前设置；选中已知候选或提交手填模型更改，会在本角色草稿填写最高参数，需保存。未知能力请手填。候选不保证账户权限。</h:p>
+          <h:p class="hint" id="qc-model-notice">获取后从同一输入框搜索候选，或直接手填模型 ID；不会自动更换当前模型。</h:p>
+          <h:p class="hint" id="qc-endpoint-notice"/><h:div class="action-control"><h:button id="qc-maximum" type="button" aria-describedby="qc-maximum-notice">按该模型最高值填写</h:button><h:small id="qc-maximum-reason" class="disabled-reason" hidden="hidden"/></h:div><h:p class="hint" id="qc-maximum-notice"/>
+          <h:details><h:summary>使用习惯预设（保存后生效）</h:summary>
+            <h:div class="form-row"><h:label for="qc-habit">内置预设（模板）</h:label><h:div class="picker"><h:div class="picker-line"><h:input id="qc-habit" type="text" value="内置预设 · GLM-5.2 · max（仿 ZCode 习惯）" readonly="readonly" aria-describedby="qc-habit-note"/><h:button id="qc-habit-toggle" type="button" aria-label="选择习惯预设" aria-expanded="false">▾</h:button></h:div><h:div id="qc-habit-options" class="picker-options" role="listbox" hidden="hidden"/></h:div></h:div>
+            <h:p id="qc-habit-note" class="hint"/><h:div class="action-control"><h:button id="qc-apply-habit" type="button">填入预设（保存后生效）</h:button><h:small id="qc-apply-habit-reason" class="disabled-reason" hidden="hidden"/></h:div>
+          </h:details><h:p id="qc-provider-notice" class="hint"/><h:p id="qc-test-state" class="hint">尚未测试</h:p><h:details id="qc-advanced"><h:summary>高级参数</h:summary><h:div class="form-row"><h:label for="qc-effort">推理强度 · effort</h:label><h:div class="picker"><h:div class="picker-line"><h:input id="qc-effort" aria-describedby="qc-effort-help qc-effort-notice" type="text" value="max" placeholder="default = 不发送" autocomplete="off" spellcheck="false"/><h:button id="qc-effort-toggle" type="button" aria-label="选择选项" aria-expanded="false">▾</h:button></h:div><h:div id="qc-effort-options" class="picker-options" role="listbox" hidden="hidden"/></h:div></h:div>
+          <h:div class="form-row"><h:label for="qc-thinking">思考模式 · thinking</h:label><h:div class="picker"><h:div class="picker-line"><h:input id="qc-thinking" aria-describedby="qc-thinking-help qc-thinking-notice" type="text" value="enabled" placeholder="default = 服务端默认" autocomplete="off" spellcheck="false"/><h:button id="qc-thinking-toggle" type="button" aria-label="选择选项" aria-expanded="false">▾</h:button></h:div><h:div id="qc-thinking-options" class="picker-options" role="listbox" hidden="hidden"/></h:div></h:div>
+          <h:p class="hint" id="qc-thinking-help">default：不发送 thinking，采用服务端默认，不等于关闭；enabled：明确请求开启；disabled：明确请求关闭，需模型支持。enabled 不表示最高推理强度。</h:p>
+          <h:p class="hint" id="qc-thinking-notice"/>
+          <h:p class="hint" id="qc-effort-help">effort 控制思考投入；较高档位通常更慢、可能消耗更多输出。default 不发送 reasoning_effort，既不是最低档也不是关闭。与 thinking 分别设置，不保证所有组合都有效。</h:p>
+          <h:p class="hint" id="qc-effort-notice"/>
+          <h:div class="form-row"><h:label for="qc-protocol">协议</h:label><h:div class="picker"><h:div class="picker-line"><h:input id="qc-protocol" aria-describedby="qc-protocol-help" type="text" value="openai_chat_completions" placeholder="openai_chat_completions" autocomplete="off" spellcheck="false"/><h:button id="qc-protocol-toggle" type="button" aria-label="选择选项" aria-expanded="false">▾</h:button></h:div><h:div id="qc-protocol-options" class="picker-options" role="listbox" hidden="hidden"/></h:div></h:div>
+          <h:label>API 基址 · Base URL<h:input id="qc-base-url" aria-describedby="qc-base-url-help" type="url" spellcheck="false"/></h:label>
+          <h:p class="hint" id="qc-base-url-help">模型请求的入口。填写基址，程序会追加 /chat/completions；不要填写完整对话路径、带 Key 的 URL 或 Anthropic 地址。自定义地址会接收 Key 与待处理正文，请核实服务归属。</h:p>
+          <h:label>模型列表 URL<h:input id="qc-models-url" aria-describedby="qc-models-url-help" type="url" spellcheck="false" placeholder="空值使用文档候选，不猜接口"/></h:label>
+          <h:p class="hint" id="qc-models-url-help">获取候选模型用的完整地址（GET）。官方 GLM 留空时，无需 Key 即可按当前端点联网读取官方文档：通用 API 读模型文档，Coding Plan 读对应 overview，不猜 /models 接口。失败回退缓存会标注非实时。收费模型测试仍需保存 Key。其它地址请按服务商说明填写。</h:p>
+          <h:p class="hint" id="qc-protocol-help">协议决定请求格式。当前仅支持 openai_chat_completions；Responses / Anthropic 需要独立适配，只改名称或 URL 无效。</h:p>
+          <h:div class="action-control"><h:button id="qc-defaults" type="button">恢复插件初始参数（保留模型）</h:button><h:small id="qc-defaults-reason" class="disabled-reason" hidden="hidden"/></h:div>
+          <h:label>请求超时（秒）<h:input id="qc-timeout" aria-describedby="qc-timeout-help" type="number" min="1" max="1500" step="1" value="1500"/></h:label>
+          <h:p class="hint" id="qc-timeout-help">单次模型请求的等待上限；1500 秒 = 25 分钟。不是整篇论文或整个批次的总时限。测试模型使用短请求：最多 60 秒 / 1024 输出 tokens，不代表长文运行已通过。</h:p>
+          <h:label>输出上限 · max_tokens<h:input id="qc-max-tokens" aria-describedby="qc-max-tokens-help qc-tokens-notice" type="number" min="1" max="131072" step="1" value="131072"/></h:label>
+          <h:p class="hint" id="qc-max-tokens-help">限制单次生成的输出 token 数，不是输入长度或上下文窗口（context）。输入 + 生成内容还须满足模型上下文限制；提高此值不会扩大 context。思考模型需给推理与最终正文留足预算，过小可能截断。新建空白模板显式使用 GLM 131072 / DeepSeek 393216、effort=max、thinking=enabled；已保存配置不会自动覆盖。具体模型能力未知时请手填，default 仍表示服务端默认。</h:p>
+          <h:p class="hint" id="qc-tokens-notice"/>
+          <h:label>附加参数 JSON<h:textarea id="qc-extra-body" aria-describedby="qc-extra-body-help" rows="3" spellcheck="false" placeholder="例如：{&quot;temperature&quot;:0.2}">{}</h:textarea></h:label>
+          <h:p class="hint" id="qc-extra-body-help">{} 表示不附加参数。可按模型文档填写 temperature（随机性）、top_p（采样范围）等 JSON 对象；通常二选一调整。DeepSeek 思考模式会忽略 temperature，top_p 的作用也因模型而异。接口可能拒绝或忽略不支持的参数。不能在这里覆盖模型、正文、thinking、effort、max_tokens、stream、Key 或请求头。</h:p>
+          </h:details><h:div class="actions"><h:div class="action-control"><h:button id="qc-models" type="button">获取模型列表</h:button><h:small id="qc-models-reason" class="disabled-reason" hidden="hidden"/></h:div><h:div class="action-control"><h:button id="qc-test" type="button">测试 QC 模型</h:button><h:small id="qc-test-reason" class="disabled-reason" hidden="hidden"/></h:div></h:div>
+        </h:fieldset>
+        <h:fieldset><h:legend>中文翻译 · ZH</h:legend>
+          <h:div class="form-row"><h:label for="zh-provider">服务商 / Key 来源</h:label><h:div class="picker"><h:div class="picker-line"><h:input id="zh-provider" aria-describedby="zh-provider-help" type="text" value="glm" placeholder="glm / deepseek / tongji" autocomplete="off" spellcheck="false"/><h:button id="zh-provider-toggle" type="button" aria-label="选择选项" aria-expanded="false">▾</h:button></h:div><h:div id="zh-provider-options" class="picker-options" role="listbox" hidden="hidden"/></h:div></h:div>
+          <h:div class="form-row"><h:label for="zh-model">模型</h:label><h:div class="picker"><h:div class="picker-line"><h:input id="zh-model" aria-describedby="zh-model-help" type="text" value="" placeholder="搜索候选或直接填写模型 ID" autocomplete="off" spellcheck="false"/><h:button id="zh-model-toggle" type="button" aria-label="选择选项" aria-expanded="false">▾</h:button></h:div><h:div id="zh-model-options" class="picker-options" role="listbox" hidden="hidden"/></h:div></h:div>
+
+          <h:p class="hint" id="zh-provider-help">决定使用本插件保存的哪份 Key：glm 为智谱，deepseek 为 DeepSeek，tongji 为同济校内 API；模型和 API 地址需与该 Key 的服务一致。</h:p>
+          <h:p class="hint" id="zh-model-help">请填接口接受的 API ID；候选展示名 / 版本名仅供识别，不作为请求 model。获取列表不改当前设置；选中已知候选或提交手填模型更改，会在本角色草稿填写最高参数，需保存。未知能力请手填。候选不保证账户权限。</h:p>
+          <h:p class="hint" id="zh-model-notice">获取后从同一输入框搜索候选，或直接手填模型 ID；不会自动更换当前模型。</h:p>
+          <h:p class="hint" id="zh-endpoint-notice"/><h:div class="action-control"><h:button id="zh-maximum" type="button" aria-describedby="zh-maximum-notice">按该模型最高值填写</h:button><h:small id="zh-maximum-reason" class="disabled-reason" hidden="hidden"/></h:div><h:p class="hint" id="zh-maximum-notice"/>
+          <h:details><h:summary>使用习惯预设（保存后生效）</h:summary>
+            <h:div class="form-row"><h:label for="zh-habit">内置预设（模板）</h:label><h:div class="picker"><h:div class="picker-line"><h:input id="zh-habit" type="text" value="内置预设 · GLM-5.2 · max（仿 ZCode 习惯）" readonly="readonly" aria-describedby="zh-habit-note"/><h:button id="zh-habit-toggle" type="button" aria-label="选择习惯预设" aria-expanded="false">▾</h:button></h:div><h:div id="zh-habit-options" class="picker-options" role="listbox" hidden="hidden"/></h:div></h:div>
+            <h:p id="zh-habit-note" class="hint"/><h:div class="action-control"><h:button id="zh-apply-habit" type="button">填入预设（保存后生效）</h:button><h:small id="zh-apply-habit-reason" class="disabled-reason" hidden="hidden"/></h:div>
+          </h:details><h:p id="zh-provider-notice" class="hint"/><h:p id="zh-test-state" class="hint">尚未测试</h:p><h:details id="zh-advanced"><h:summary>高级参数</h:summary><h:div class="form-row"><h:label for="zh-effort">推理强度 · effort</h:label><h:div class="picker"><h:div class="picker-line"><h:input id="zh-effort" aria-describedby="zh-effort-help zh-effort-notice" type="text" value="max" placeholder="default = 不发送" autocomplete="off" spellcheck="false"/><h:button id="zh-effort-toggle" type="button" aria-label="选择选项" aria-expanded="false">▾</h:button></h:div><h:div id="zh-effort-options" class="picker-options" role="listbox" hidden="hidden"/></h:div></h:div>
+          <h:div class="form-row"><h:label for="zh-thinking">思考模式 · thinking</h:label><h:div class="picker"><h:div class="picker-line"><h:input id="zh-thinking" aria-describedby="zh-thinking-help zh-thinking-notice" type="text" value="enabled" placeholder="default = 服务端默认" autocomplete="off" spellcheck="false"/><h:button id="zh-thinking-toggle" type="button" aria-label="选择选项" aria-expanded="false">▾</h:button></h:div><h:div id="zh-thinking-options" class="picker-options" role="listbox" hidden="hidden"/></h:div></h:div>
+          <h:p class="hint" id="zh-thinking-help">default：不发送 thinking，采用服务端默认，不等于关闭；enabled：明确请求开启；disabled：明确请求关闭，需模型支持。enabled 不表示最高推理强度。</h:p>
+          <h:p class="hint" id="zh-thinking-notice"/>
+          <h:p class="hint" id="zh-effort-help">effort 控制思考投入；较高档位通常更慢、可能消耗更多输出。default 不发送 reasoning_effort，既不是最低档也不是关闭。与 thinking 分别设置，不保证所有组合都有效。</h:p>
+          <h:p class="hint" id="zh-effort-notice"/>
+          <h:div class="form-row"><h:label for="zh-protocol">协议</h:label><h:div class="picker"><h:div class="picker-line"><h:input id="zh-protocol" aria-describedby="zh-protocol-help" type="text" value="openai_chat_completions" placeholder="openai_chat_completions" autocomplete="off" spellcheck="false"/><h:button id="zh-protocol-toggle" type="button" aria-label="选择选项" aria-expanded="false">▾</h:button></h:div><h:div id="zh-protocol-options" class="picker-options" role="listbox" hidden="hidden"/></h:div></h:div>
+          <h:label>API 基址 · Base URL<h:input id="zh-base-url" aria-describedby="zh-base-url-help" type="url" spellcheck="false"/></h:label>
+          <h:p class="hint" id="zh-base-url-help">模型请求的入口。填写基址，程序会追加 /chat/completions；不要填写完整对话路径、带 Key 的 URL 或 Anthropic 地址。自定义地址会接收 Key 与待处理正文，请核实服务归属。</h:p>
+          <h:label>模型列表 URL<h:input id="zh-models-url" aria-describedby="zh-models-url-help" type="url" spellcheck="false" placeholder="空值使用文档候选，不猜接口"/></h:label>
+          <h:p class="hint" id="zh-models-url-help">获取候选模型用的完整地址（GET）。官方 GLM 留空时，无需 Key 即可按当前端点联网读取官方文档：通用 API 读模型文档，Coding Plan 读对应 overview，不猜 /models 接口。失败回退缓存会标注非实时。收费模型测试仍需保存 Key。其它地址请按服务商说明填写。</h:p>
+          <h:p class="hint" id="zh-protocol-help">协议决定请求格式。当前仅支持 openai_chat_completions；Responses / Anthropic 需要独立适配，只改名称或 URL 无效。</h:p>
+          <h:div class="action-control"><h:button id="zh-defaults" type="button">恢复插件初始参数（保留模型）</h:button><h:small id="zh-defaults-reason" class="disabled-reason" hidden="hidden"/></h:div>
+          <h:label>请求超时（秒）<h:input id="zh-timeout" aria-describedby="zh-timeout-help" type="number" min="1" max="1500" step="1" value="1500"/></h:label>
+          <h:p class="hint" id="zh-timeout-help">单次模型请求的等待上限；1500 秒 = 25 分钟。不是整篇论文或整个批次的总时限。测试模型使用短请求：最多 60 秒 / 1024 输出 tokens，不代表长文运行已通过。</h:p>
+          <h:label>输出上限 · max_tokens<h:input id="zh-max-tokens" aria-describedby="zh-max-tokens-help zh-tokens-notice" type="number" min="1" max="131072" step="1" value="131072"/></h:label>
+          <h:p class="hint" id="zh-max-tokens-help">限制单次生成的输出 token 数，不是输入长度或上下文窗口（context）。输入 + 生成内容还须满足模型上下文限制；提高此值不会扩大 context。思考模型需给推理与最终正文留足预算，过小可能截断。新建空白模板显式使用 GLM 131072 / DeepSeek 393216、effort=max、thinking=enabled；已保存配置不会自动覆盖。具体模型能力未知时请手填，default 仍表示服务端默认。</h:p>
+          <h:p class="hint" id="zh-tokens-notice"/>
+          <h:label>附加参数 JSON<h:textarea id="zh-extra-body" aria-describedby="zh-extra-body-help" rows="3" spellcheck="false" placeholder="例如：{&quot;temperature&quot;:0.2}">{}</h:textarea></h:label>
+          <h:p class="hint" id="zh-extra-body-help">{} 表示不附加参数。可按模型文档填写 temperature（随机性）、top_p（采样范围）等 JSON 对象；通常二选一调整。DeepSeek 思考模式会忽略 temperature，top_p 的作用也因模型而异。接口可能拒绝或忽略不支持的参数。不能在这里覆盖模型、正文、thinking、effort、max_tokens、stream、Key 或请求头。</h:p>
+          </h:details><h:div class="actions"><h:div class="action-control"><h:button id="zh-models" type="button">获取模型列表</h:button><h:small id="zh-models-reason" class="disabled-reason" hidden="hidden"/></h:div><h:div class="action-control"><h:button id="zh-test" type="button">测试 ZH 模型</h:button><h:small id="zh-test-reason" class="disabled-reason" hidden="hidden"/></h:div></h:div>
+        </h:fieldset>
+      </h:div>
+      <h:div class="model-grid keys">
+        <h:div class="key-field"><h:label>GLM API Key<h:input id="glm-key" type="password" autocomplete="off" spellcheck="false"/></h:label>
+        </h:div>
+        <h:div class="key-field"><h:label>DeepSeek API Key<h:input id="deepseek-key" type="password" autocomplete="off" spellcheck="false"/></h:label>
+        </h:div>
+      </h:div>
+      <h:div class="key-field"><h:label>同济校内 API Key（独立保存）<h:input id="tongji-key" type="password" autocomplete="off" spellcheck="false"/></h:label></h:div>
+      <h:p class="hint">同济服务使用 https://agi.tongji.edu.cn/v1 和独立校内 Key；需具备网络及账户权限。模型 ID 按校内平台原样填写（区分大小写），先保存 Key 再获取模型列表。列表可能含非对话模型；QC / ZH 请选择支持 Chat Completions 的模型。连接失败不会自动换用其他服务。</h:p>
+      <h:p id="credentials">密钥保存状态尚未核实；输入框有内容不代表已经保存。</h:p>
+      <h:div class="actions"><h:div class="action-control"><h:button id="save-keys" type="button">仅保存 API Keys</h:button><h:small id="save-keys-reason" class="disabled-reason" hidden="hidden"/></h:div><h:div class="action-control"><h:button id="save-config" type="button">保存模型配置</h:button><h:small id="save-config-reason" class="disabled-reason" hidden="hidden"/></h:div><h:div class="action-control"><h:button id="reload-config" type="button">重新读取配置</h:button><h:small id="reload-config-reason" class="disabled-reason" hidden="hidden"/></h:div></h:div>
+      <h:p class="hint">连接后读取已存 Key，默认以密码圆点显示；点击输入框内的小眼睛手动显示或隐藏。不另设按钮、倒计时或切换窗口隐藏逻辑。修改后点击保存；未修改的不重复保存，已有 Key 不能误存为空。</h:p>
+      <h:p class="hint">圆点是显示遮罩，磁盘仍用本机加密存储。Key 仅留在本面板内存，不写偏好或日志；关闭面板清除。请勿在显示明文时截图或共享屏幕。模型测试可能产生 API 用量。</h:p>
+      <h:pre id="model-result">模型列表与测试结果将在这里显示。</h:pre>
+      <h:h3>MinerU 解析服务</h:h3>
+      <h:label class="mineru-key-field">MinerU API Key / Token（当前生效值）<h:input id="mineru-key" type="password" autocomplete="off" spellcheck="false"/></h:label>
+      <h:p id="mineru-state">尚未核实 MinerU 密钥保存状态。</h:p>
+      <h:div class="actions"><h:div class="action-control"><h:button id="save-mineru" type="button">保存 / 更新 MinerU Key</h:button><h:small id="save-mineru-reason" class="disabled-reason" hidden="hidden"/></h:div><h:div class="action-control"><h:button id="reload-mineru" type="button">核实保存状态</h:button><h:small id="reload-mineru-reason" class="disabled-reason" hidden="hidden"/></h:div></h:div>
+      <h:p class="hint">独立保存，不要求填写 QC / ZH 模型；用于之后的解析，不重跑已有文献。保存不会调用 MinerU，也不验证有效期。任务或预演运行时不可更新密钥。</h:p>
+    </h:section>
+    <h:footer>窗口关闭只停止界面轮询；后台处理继续。进程已启动不代表文献已完成 QC、翻译或验收。</h:footer>
+  </h:main>
+</window>

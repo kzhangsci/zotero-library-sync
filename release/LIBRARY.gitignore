@@ -1,0 +1,8 @@
+**/assets/
+.trash/
+.obsidian/workspace*
+**/.sync*.lock
+*.lock
+*.pdf
+*.PDF
+__pycache__/

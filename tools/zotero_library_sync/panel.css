@@ -1,0 +1,81 @@
+:root { color-scheme: light dark; font: 14px/1.55 system-ui, "Microsoft YaHei", sans-serif; color: light-dark(#1d2938, #e4eaf2); background: light-dark(#f3f5f8, #161c25); }
+window { overflow: hidden; }
+/* XUL windows do not provide HTML document scrolling: bound the HTML container. */
+main { display: block; box-sizing: border-box; height: 100vh; min-height: 0; overflow-y: auto; overflow-x: hidden; scrollbar-gutter: stable; padding: 22px 28px; width: 100%; max-width: 1320px; margin: 0 auto; }
+header, .section-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 16px; }
+#models-title { scroll-margin-top: 16px; }
+h1 { font-size: 25px; margin: 0; letter-spacing: -.5px; } h1 span { font-size: 19px; font-weight: 500; }
+h2 { font-size: 17px; margin: 0 0 12px; } p { margin: 8px 0; }
+section { display: block; background: light-dark(#fff, #202935); border: 1px solid light-dark(#dce3ed, #3b4758); border-radius: 9px; padding: 18px; margin: 16px 0; }
+button, input, select { font: inherit; border: 1px solid light-dark(#b8c4d5, #637185); border-radius: 5px; padding: 6px 10px; color: inherit; background: light-dark(#fff, #18212e); box-sizing: border-box; }
+input:not([type="checkbox"]), button { min-height: 36px; }
+button { cursor: pointer; white-space: nowrap; } button:hover:enabled { background: light-dark(#edf3fc, #35475e); }
+button:disabled { opacity: .5; cursor: default; } .primary { background: #175cb4; color: #fff; border-color: #175cb4; }
+:focus-visible { outline: 2px solid #579af1; outline-offset: 2px; }
+.paths { display: grid; grid-template-columns: 110px 1fr; align-items: center; gap: 10px; }
+.paths input { width: 100%; } .actions, .controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 12px 0; }
+.controls input { width: 70px; } .controls label { display: flex; align-items: center; gap: 6px; }
+.translation-choice { display: inline-flex; align-items: center; gap: 8px; }
+[hidden] { display: none !important; }
+.key-field { min-width: 0; }
+.key-field input, #mineru-key { display: block; width: 100%; min-width: 0; }
+.mineru-key-field { display: grid; gap: 5px; max-width: 640px; }
+/* Zotero/Gecko already supplies one eye inside password inputs. Do not add a second control. */
+input::-moz-reveal { cursor: pointer; }
+.hint, footer { color: light-dark(#566476, #b3bdca); font-size: 12px; }
+#message { padding: 10px 14px; border-radius: 6px; background: light-dark(#e7effc, #253e61); white-space: pre-wrap; overflow-wrap: anywhere; }
+#message[data-error="true"] { background: light-dark(#ffebe9, #512d2a); color: light-dark(#90231c, #ffd3c9); }
+pre { font: 13px/1.6 ui-monospace, Consolas, "Microsoft YaHei", monospace; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 260px; overflow: auto; padding: 12px; background: light-dark(#f5f7fa, #18212e); border-radius: 5px; }
+.compact { max-height: 100px; } .path { overflow-wrap: anywhere; }
+.table-wrap { overflow: auto; } table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th { text-align: left; color: light-dark(#516073, #bec9d9); font-weight: 600; } th, td { padding: 8px; border-bottom: 1px solid light-dark(#e0e6ee, #3b4758); vertical-align: top; overflow-wrap: anywhere; }
+td:nth-child(2) { max-width: 360px; } .model-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }
+fieldset { border: 1px solid light-dark(#dce3ed, #3b4758); border-radius: 6px; min-width: 0; padding: 14px; }
+legend { font-weight: 600; } fieldset label { display: grid; grid-template-columns: 145px minmax(0, 1fr); align-items: center; gap: 8px; margin: 8px 0; }
+fieldset input, fieldset select { min-width: 0; width: 100%; } .keys { margin-top: 14px; } .keys label { display: grid; gap: 5px; }
+/* In-panel choices avoid Gecko's native HTML select popup in a XUL window. */
+.form-row { display: grid; grid-template-columns: 145px minmax(0, 1fr); align-items: start; gap: 8px; margin: 8px 0; }
+.form-row > label { display: block; margin: 6px 0; }
+.picker { display: block; min-width: 0; }
+.picker-line { display: block; position: relative; min-width: 0; }
+.picker-line input { display: block; min-width: 0; width: 100%; padding-inline-end: 38px; }
+.picker-line button { position: absolute; inset-block: 1px; inset-inline-end: 1px; width: 34px; min-height: 0; padding: 0; border: 0; border-radius: 0 4px 4px 0; background: transparent; }
+.picker-line button:focus-visible { outline-offset: -3px; }
+.picker-options { display: block; max-height: 210px; overflow-y: auto; border: 1px solid #7999c7; border-radius: 5px; padding: 3px; margin-top: 3px; background: light-dark(#fff, #202935); }
+.picker-options button { display: block; width: 100%; text-align: left; white-space: normal; overflow-wrap: anywhere; border: 0; margin: 0; border-radius: 3px; }
+.picker-options button[aria-selected="true"] { background: light-dark(#d9e8ff, #354e78); }
+.chunk-choice { display: flex; align-items: start; gap: 6px; }
+.chunk-choice .picker { width: 100px; }
+fieldset textarea { width: 100%; min-width: 0; font: 12px/1.5 ui-monospace, Consolas, monospace; color: inherit; background: light-dark(#fff, #18212e); border: 1px solid #b8c4d5; border-radius: 5px; padding: 6px; box-sizing: border-box; resize: vertical; }
+@media (max-width: 900px) { main { padding: 14px; } .model-grid { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 560px) { .paths, .form-row, fieldset label { grid-template-columns: minmax(0, 1fr); } .form-row > label { margin: 0; } section { padding: 12px; } }
+.page-tabs { display: flex; gap: 8px; margin: 14px 0; }
+.page-tabs button[aria-pressed="true"] { background: #175cb4; border-color: #175cb4; color: white; }
+.action-control { display: inline-flex; flex-direction: column; align-items: flex-start; gap: 3px; max-width: 100%; }
+.disabled-reason { display: block; max-width: 240px; font-size: 12px; line-height: 1.4; color: light-dark(#65542b, #e1c790); white-space: normal; overflow-wrap: anywhere; }
+details { margin: 12px 0; } summary { cursor: pointer; font-weight: 600; padding: 4px 0; }
+#status-error { background: light-dark(#ffebe9, #512d2a); }
+/* All read-only diagnostics must be selectable in the XUL-hosted panel:
+   Gecko windows need an explicit per-element opt-in for HTML text selection.
+   Compatibility correction; real-Zotero behaviour still needs validation.
+   Buttons keep working: user-select never disables event handlers. */
+#status-error, #status-text, #frozen-config, #task-notice, #summary,
+#report-path, #status-rows, #selection, #preview-text, #model-result, #message {
+  -moz-user-select: text; user-select: text; cursor: text;
+}
+#task-notice, #draft-state { white-space: pre-wrap; overflow-wrap: anywhere; }
+#preview-rows input[type="checkbox"] { width: 18px; height: 18px; }
+#preview-rows small { display: block; min-width: 60px; }
+.actions { align-items: flex-start; }
+button { max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
+@media (max-width: 560px) {
+  /* Keep each paper's switches beside its identity on narrow windows. */
+  #sync-page table, #preview-rows { display: block; }
+  #sync-page thead { display: none; }
+  #preview-rows tr { display: grid; grid-template-columns: 90px minmax(0, 1fr); padding: 8px 0; border-bottom: 1px solid light-dark(#dce3ed, #3b4758); }
+  #preview-rows td { display: block; border: 0; padding: 4px 6px; max-width: none; }
+  #preview-rows td:nth-child(n+3) { grid-column: 1 / -1; }
+  #preview-rows td:first-child::before { content: "包含 "; }
+  #preview-rows td:nth-child(2)::before { content: "翻译 "; }
+  #preview-rows td:nth-child(3) { font-weight: 600; }
+}
