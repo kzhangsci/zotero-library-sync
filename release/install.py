@@ -111,7 +111,7 @@ def install(source, target, library, baseline, *, apply=False, git_path=None,
     manifest = verify(source)
     plan = {"mode": "apply" if apply else "dry-run", "version": manifest["version"],
             "app": str(app), "data": str(data), "library": str(library), "baseline_date": baseline,
-            "files": len(manifest["files"]), "state": "local-install", "license": "LicensePending",
+            "files": len(manifest["files"]), "state": "NOT_PUBLISHED", "license": "LicensePending",
             "sync_started": False, "network": False, "git_path": str(git), "git_version": git_version,
             "git_init_requested": bool(init_git), "git_initialized": False}
     if not apply:

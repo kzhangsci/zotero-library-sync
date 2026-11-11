@@ -312,7 +312,7 @@ test("endpoint/provider edits invalidate model options, provenance and highest m
   }
 });
 
-test("failed refresh and malformed success responses clear previous live lists and never present stale results as current", async t => {
+test("failed refresh and malformed success responses keep the last trusted list clearly marked", async t => {
   const u = ui(); t.after(() => u.controller.close()); await u.controller.init();
   for (const failure of ["operation", "response", "transport"]) {
     await fetchList(u, "qc", catalog()); const before = u.controller.readModel("qc");
@@ -321,10 +321,12 @@ test("failed refresh and malformed success responses clear previous live lists a
     if (failure === "operation") { u.f.operationStatus = "failed"; u.f.operationError = "synthetic unavailable"; }
     if (failure === "response") u.f.operationResult = { ...catalog(), ok: false, error: "bad catalog" };
     await u.controller.tick();
-    assert.equal(u.controller.modelOptions.qc, null); assert.equal(u.el("qc-model-options").children.length, 0);
+    // The previously fetched candidates survive a failed refresh, explicitly
+    // marked as kept; they are never presented as a fresh live listing.
+    assert.ok(u.controller.modelOptions.qc); assert.equal(u.el("qc-model-options").children.length, 4);
     assert.doesNotMatch(u.el("qc-model-notice").textContent, /本次联网获取的官方文档候选/);
-    assert.match(u.el("qc-model-notice").textContent, /失败|无效/);
-    assert.doesNotMatch(u.el("model-result").textContent, /synthetic candidate notice|本次联网获取的官方文档候选/);
+    assert.match(u.el("qc-model-notice").textContent, /失败|无效|保留/);
+    assert.doesNotMatch(u.el("model-result").textContent, /synthetic candidate notice/);
     assert.deepEqual(u.controller.readModel("qc"), before);
     u.f.operationStatus = "completed"; u.f.operationError = undefined; u.f.override = null;
   }
@@ -345,11 +347,11 @@ test("closing during a model-list submission discards late results without anoth
   assert.equal(u.f.posts("/v1/test").length, 0); assert.equal(u.f.posts("/v1/config").length, 0);
 });
 
-test("beta.8 markup exposes one maximum button per role and refreshes only its own chrome resource URLs", () => {
+test("beta.9 markup exposes one maximum button per role and refreshes only its own chrome resource URLs", () => {
   const markup = fs.readFileSync(path.join(ROOT, "panel.xhtml"), "utf8");
-  assert.match(markup, /v0\.2\.0-beta\.8/); assert.doesNotMatch(markup, /0\.2\.0-beta\.[34567]/);
+  assert.match(markup, /v0\.2\.0-beta\.9/); assert.doesNotMatch(markup, /0\.2\.0-beta\.[345678]/);
   const resources = [...markup.matchAll(/chrome:\/\/library-sync\/content\/[^" ]+/g)].map(match => match[0]);
-  assert.equal(resources.length, 4); assert.ok(resources.every(url => url.endsWith("?v=0.2.0-beta.8")));
+  assert.equal(resources.length, 4); assert.ok(resources.every(url => url.endsWith("?v=0.2.0-beta.9")));
   for (const phase of ["qc", "zh"]) {
     assert.equal([...markup.matchAll(new RegExp(`id="${phase}-maximum"`, "g"))].length, 1);
     assert.ok(markup.includes(`id="${phase}-maximum-notice"`));

@@ -35,8 +35,7 @@ class PathsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
             legacy = library_paths.get_paths(repo=root, environ={})
-            self.assertTrue(legacy.portable)
-            self.assertNotEqual(legacy.data, root)
+            self.assertEqual(legacy.data, root)
             self.assertIsNone(legacy.baseline_date)
             (root / "library-sync.json").write_text(json.dumps({"schema_version": 1,
                 "data_dir": "state", "library_dir": "papers-vault", "baseline_date": "2026-01-02"}))

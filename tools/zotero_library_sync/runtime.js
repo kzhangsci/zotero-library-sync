@@ -255,7 +255,7 @@ LibrarySync = {
       }
       return;
     }
-    this.panel = window.openDialog("chrome://library-sync/content/panel.xhtml?v=0.2.0-beta.8", "library-sync-panel",
+    this.panel = window.openDialog("chrome://library-sync/content/panel.xhtml?v=0.2.0-beta.9", "library-sync-panel",
       "chrome,centerscreen,resizable,dialog=no,width=1120,height=820", { host: this, selected });
   },
   panelClosed(window) { if (this.panel === window) this.panel = null; },

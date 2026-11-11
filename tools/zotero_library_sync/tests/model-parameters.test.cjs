@@ -97,8 +97,10 @@ test("an explicit click can replace an existing role draft without changing the 
       assert.deepEqual(u.controller.savedConfig, saved); assert.deepEqual(f.publicConfig, backend);
       assert.deepEqual([u.el("glm-key").value, u.el("deepseek-key").value], keys);
       assert.equal(f.requests.length, requests); assert.equal(f.reads.length, reads);
-      assert.equal(u.controller.configDirty, true); assert.equal(u.controller.preview, null);
+      assert.equal(u.controller.configDirty, true); assert.ok(u.controller.preview);
+      assert.equal(u.controller.modelDirty, true);
       assert.equal(u.el("start").disabled, true);
+      assert.match(u.el("start-reason").textContent, /存在未保存修改|保存配置/);
       assert.match(u.el("message").textContent, new RegExp(phase.toUpperCase() + ".*草稿尚未保存"));
     }
   }

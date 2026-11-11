@@ -111,18 +111,21 @@ def runtime_files(repo, vendor):
 def build(repo=REPO, vendor=None, *, source_only=False):
     repo = Path(repo).resolve()
     files = export_sources(repo)
+    # The NOT_PUBLISHED tripwire describes local review artifacts; published
+    # archives must not carry a statement that contradicts their own release.
+    published = {name: value for name, value in files.items() if name != "NOT_PUBLISHED"}
     xpi = build_bytes(repo / "tools/zotero_library_sync")
-    files["source.sha256"] = "".join(f"{digest(value)}  {name}\n" for name, value in sorted(files.items())).encode()
-    outputs = {f"library-sync-{VERSION}-source.zip": zip_bytes(files), f"library-sync-{VERSION}.xpi": xpi}
+    published["source.sha256"] = "".join(f"{digest(value)}  {name}\n" for name, value in sorted(published.items())).encode()
+    outputs = {f"library-sync-{VERSION}-source.zip": zip_bytes(published), f"library-sync-{VERSION}.xpi": xpi}
     if not source_only:
-        app = dict(files)
+        app = dict(published)
         app.update(runtime_files(repo, Path(vendor or repo / "release/vendor").resolve()))
         app[f"addon/library-sync-{VERSION}.xpi"] = xpi
         app["FILES.json"] = json.dumps(inventory(app), indent=2).encode() + b"\n"
         bundle = {"app/" + name: data for name, data in app.items()}
-        bundle["setup.ps1"] = files["release/setup.ps1"]
-        bundle["README.md"] = files["README.md"].replace(b"](release/", b"](app/release/")
-        bundle["LICENSE_PENDING"] = files["LICENSE_PENDING"]
+        bundle["setup.ps1"] = published["release/setup.ps1"]
+        bundle["README.md"] = published["README.md"].replace(b"](release/", b"](app/release/")
+        bundle["LICENSE_PENDING"] = published["LICENSE_PENDING"]
         bundle["bundle.sha256"] = "".join(f"{digest(value)}  {name}\n" for name, value in sorted(bundle.items())).encode()
         outputs[f"library-sync-{VERSION}-windows-x64.zip"] = zip_bytes(bundle)
     outputs["SHA256SUMS.txt"] = "".join(f"{digest(value)}  {name}\n" for name, value in sorted(outputs.items())).encode()
@@ -152,7 +155,7 @@ def main(argv=None):
             file.write_bytes(data)
             if digest(file.read_bytes()) != digest(data):
                 raise ValueError("Written release hash mismatch")
-    print(json.dumps({"mode": "apply" if args.apply else "dry-run", "status": "built",
+    print(json.dumps({"mode": "apply" if args.apply else "dry-run", "status": "NOT_PUBLISHED",
         "license": "LicensePending", "outputs": [{"name": n, "bytes": len(v), "sha256": digest(v)}
         for n, v in sorted(outputs.items())]}, indent=2))
     return 0

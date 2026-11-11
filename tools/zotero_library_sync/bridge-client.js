@@ -10,7 +10,7 @@ var LibrarySyncBridge = (() => {
   const EXTENDED = ["base_url", "models_url", "protocol", "thinking", "extra_body", "endpoint_confirmed"];
   // Single version source for the diagnostics header; the packaged ?v= strings
   // and manifest version are validated separately by the Python build tests.
-  const VERSION = "0.2.0-beta.8";
+  const VERSION = "0.2.0-beta.9";
   class SafeError extends Error {
     constructor(code, message, details = {}) {
       super(message); this.name = "SafeError"; this.code = code;
@@ -343,7 +343,7 @@ var LibrarySyncBridge = (() => {
       ? ["/v1/status", "/v1/history", "/v1/config", "/v1/mineru"].includes(path) ||
         (path.startsWith("/v1/status/") && RUN_ID.test(path.slice(11))) ||
         (path.startsWith("/v1/operations/") && UUID.test(path.slice(15)))
-      : method === "POST" && ["/v1/config", "/v1/keys", "/v1/mineru", "/v1/credentials/reveal", "/v1/test", "/v1/models", "/v1/preview", "/v1/start", "/v1/pause", "/v1/resume"].includes(path);
+      : method === "POST" && ["/v1/config", "/v1/keys", "/v1/mineru", "/v1/credentials/reveal", "/v1/test", "/v1/models", "/v1/preview", "/v1/preview/rebind", "/v1/start", "/v1/pause", "/v1/resume"].includes(path);
     if (!allowed) fail("ROUTE", "拒绝协议以外的 bridge 请求。");
   }
   function selections(value) {
@@ -390,6 +390,10 @@ var LibrarySyncBridge = (() => {
     if (value.endpoint_kind !== undefined) {
       if (typeof value.endpoint_kind !== "string" || !EFFORT.test(value.endpoint_kind)) fail("MODEL", "模型列表端点类型无效。");
       metadata.endpoint_kind = value.endpoint_kind;
+    }
+    if (value.cache !== undefined) {
+      if (!["hit", "stale"].includes(value.cache)) fail("MODEL", "模型列表缓存标记无效。");
+      metadata.cache = value.cache;
     }
     if (value.reference !== undefined) {
       if (typeof value.reference !== "string" || value.reference.length > 2048 || /[\x00-\x20\x7f]/.test(value.reference)) fail("MODEL", "模型列表参考地址无效。");
@@ -620,14 +624,29 @@ var LibrarySyncBridge = (() => {
       return result.operation;
     }
     preview(value) { return this.operationRequest("/v1/preview", previewBody(value)); }
+    async rebind(previewId) {
+      // Lightweight model-snapshot update for an existing preview. A change
+      // issues a NEW preview id (the old one can no longer start); the panel
+      // must adopt the returned id as its current preview.
+      if (!RUN_ID.test(previewId)) fail("INPUT", "缺少有效预演 ID，请先预演。");
+      const result = await this.request("POST", "/v1/preview/rebind", { preview_id: previewId, confirm: true });
+      if (!RUN_ID.test(result.preview_id) || result.rebound !== true) {
+        fail("PROTOCOL", "预演模型更新响应无效；预演未被修改。");
+      }
+      return result;
+    }
     test(value, role = "qc") {
       if (!["qc", "zh"].includes(role)) fail("INPUT", "测试角色须为 qc 或 zh。");
       return this.operationRequest("/v1/test", { ...(EXTENDED.some(k => Object.hasOwn(value, k)) ? profile(value) : model(value)), role });
     }
-    models(provider, value = null) {
+    models(provider, value = null, refresh = true) {
       if (!PROVIDERS.includes(provider)) fail("INPUT", "请选择有效 provider。");
       if (value && value.provider !== provider) fail("INPUT", "模型列表的 Provider 与配置不一致。");
-      return this.operationRequest("/v1/models", value ? profile(value, true) : { provider });
+      // Auto-loaded catalogs ask the bridge for its TTL cache (refresh:false);
+      // the manual button forces a remote refresh. Omitting the flag keeps the
+      // legacy request body byte-for-byte compatible.
+      return this.operationRequest("/v1/models", { ...(value ? profile(value, true) : { provider }),
+        ...(refresh ? {} : { refresh: false }) });
     }
     async operation(id) {
       if (!UUID.test(id)) fail("INPUT", "无效 operation UUID。");

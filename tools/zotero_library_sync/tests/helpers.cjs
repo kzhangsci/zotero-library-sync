@@ -45,6 +45,16 @@ function fixture() {
         const provider = JSON.parse(options.body).provider;
         data = { provider, key: f.keys[provider], source: "encrypted" };
       } else if (["/v1/preview", "/v1/test", "/v1/models"].includes(route)) data = { operation: OP };
+      else if (route === "/v1/preview/rebind") {
+        const body = JSON.parse(options.body);
+        if (f.rebindOverride) { const response = f.rebindOverride(body); if (response) return response; }
+        // The bridge retires the old id and mints a fresh one; the fixture
+        // mirrors that so the panel must adopt the returned id.
+        f.rebindCount = (f.rebindCount || 0) + 1;
+        data = f.rebindResult ?? { preview_id: `${body.preview_id}_r${f.rebindCount}`, rebound: true, unchanged: false,
+          text: f.preview.text, items: structuredClone(f.preview.items),
+          deferred: structuredClone(f.preview.deferred), model_config: f.publicConfig.config };
+      }
       else if (route === "/v1/operations/" + OP) data = { status: f.operationStatus, result: f.operationResult ?? f.preview, error: f.operationError };
       else if (route === "/v1/start") { data = { run_id: RUN, started: true }; f.state = { ...f.state, active: true }; }
       else throw new Error("Unexpected route");

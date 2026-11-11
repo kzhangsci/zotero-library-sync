@@ -115,7 +115,7 @@ class PDFTests(Fixture):
 
     def test_nineteen_pages_277_295_timeout_is_not_incompleteness(self):
         texts = ["Research text for page " + str(i) for i in range(18)] + ["Conclusions\nReferences\nEnd."]
-        result = source.inspect_pdf(self.pdf(texts), {"key": "SYNTEST1", "data": {
+        result = source.inspect_pdf(self.pdf(texts), {"key": "JTNZHFYQ", "data": {
             "pages": "277-295", "DOI": DOI}, "qc_error": "request_timeout"})
         self.assertEqual(result["page_count"], 19)
         self.assertEqual(result["metrics"]["pages_metadata"]["expected_count"], 19)

@@ -20,7 +20,7 @@ RUNTIME_MODULES = (
 )
 PLUGIN_FILES = ("bootstrap.js", "bridge-client.js", "manifest.json", "panel.css", "panel.js",
                 "panel.xhtml", "picker.js", "prefs.js", "runtime.js")
-PLUGIN_TESTS = ("helpers.cjs", "ui.test.cjs", "picker.test.cjs", "protocol.test.cjs", "runtime.test.cjs", "model-parameters.test.cjs", "source-refresh.test.cjs", "model-catalog.test.cjs", "tongji.test.cjs")
+PLUGIN_TESTS = ("helpers.cjs", "ui.test.cjs", "picker.test.cjs", "protocol.test.cjs", "runtime.test.cjs", "model-parameters.test.cjs", "source-refresh.test.cjs", "model-catalog.test.cjs", "tongji.test.cjs", "model-switch.test.cjs")
 RELEASE_FILES = ("README.md", "LICENSE_PENDING.md", "PRIVACY.md", "BUILD.md", "CHANGELOG.md",
                  "setup.ps1", "install.py", "offline_smoke.py", "fetch_dependencies.py",
                  "export_rules.py", "dependencies.lock.json", "requirements.txt",
@@ -34,6 +34,84 @@ SOURCE_ALLOWLIST = (tuple("tools/" + x + ".py" for x in RUNTIME_MODULES)
                       "tools/test_library_source.py", "tools/test_model_catalog.py", "tools/test_model_api.py", "tools/test_model_profiles.py")
                    + ("release/test_export_core.py", "release/BBT_SETUP.md", "release/journal_acronyms.example.csv")
                    + tuple("release/" + x for x in RELEASE_FILES))
+
+# Top-level constants only. Private tables are deliberately replaced, never copied.
+CONSTANTS = {
+    "library_paths": {"LEGACY_DEFAULTS": "{}"},
+    "attachments_normalize_prep": {"EXPLICIT_RENAMES": "{}"},
+    "library_resume": {"LEGACY_RUN": "None", "LEGACY_PAPERS": "{}"},
+}
+
+
+class StripNarrative(ast.NodeTransformer):
+    def generic_visit(self, node):
+        super().generic_visit(node)
+        if isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            if node.body and isinstance(node.body[0], ast.Expr) and isinstance(node.body[0].value, ast.Constant) and isinstance(node.body[0].value.value, str):
+                node.body.pop(0)
+            if not node.body:
+                node.body = [ast.Pass()]
+        return node
+
+
+def portable_python(name, text):
+    if name == "citekey_reformat_prep":
+        return '"""No private Zotero item pins are distributed."""\nPINS = {}\n'
+    if name in {"glm_client", "codex_client", "claude_client"}:
+        # The standalone UI uses the explicit API profiles. Legacy paid CLI
+        # adapters are not dependencies and must not read unrelated app homes.
+        return ('"""Standalone distributions use explicitly configured model APIs."""\n'
+                'REASONING_LEVEL = "max"  # cache compatibility; API profiles keep their own reasoning identity\n'
+                'class ClaudeError(RuntimeError): pass\nclass CodexError(RuntimeError): pass\n'
+                'class CodexQuotaError(CodexError): pass\n'
+                'def ask(*args, **kwargs):\n    raise RuntimeError("Standalone Library Sync requires an API profile; CLI adapters are not bundled.")\n')
+    tree = ast.parse(text)
+    if name == "library_resume":
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Constant) and isinstance(node.value, str) and node.value.startswith("Missing ownership baseline;"):
+                node.value = "Missing ownership baseline; legacy recovery is not supported in this distribution"
+    if name == "intake_new":
+        keep = {"CK_V2", "JOURNAL_TYPES", "MEETING"}
+        body = ast.parse("import csv\nimport re\nfrom library_paths import LIBRARY as LIB, REPORTS\n").body
+        for node in tree.body:
+            if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id in keep for t in node.targets):
+                body.append(node)
+            if isinstance(node, ast.FunctionDef) and node.name in {"norm", "acronym_table"}:
+                body.append(node)
+        tree.body = body
+    changed = False
+    for node in tree.body:
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target] if isinstance(node, ast.AnnAssign) else []
+        for target in targets:
+            if isinstance(target, ast.Name) and target.id in CONSTANTS.get(name, {}):
+                expr = CONSTANTS[name][target.id]
+                node.value = ast.parse(expr, mode="eval").body
+                changed |= "_release_paths" in expr
+    if changed:
+        index = 0
+        for i, node in enumerate(tree.body):
+            if isinstance(node, ast.ImportFrom) and node.module == "__future__":
+                index = i + 1
+        tree.body.insert(index, ast.parse("import library_paths as _release_paths").body[0])
+    tree = StripNarrative().visit(tree)
+    ast.fix_missing_locations(tree)
+    return '# Library Sync standalone export; LicensePending. See release/BUILD.md.\n' + ast.unparse(tree) + '\n'
+
+
+def private_markers(repo):
+    """Identify private table values from the input, without publishing them."""
+    wanted = {"library_paths": {"LEGACY_DEFAULTS"}, "citekey_reformat_prep": {"PINS"},
+              "attachments_normalize_prep": {"EXPLICIT_RENAMES"}, "library_resume": {"LEGACY_RUN", "LEGACY_PAPERS"}}
+    result = set()
+    for module, symbols in wanted.items():
+        tree = ast.parse((Path(repo) / "tools" / (module + ".py")).read_text(encoding="utf-8-sig"))
+        for node in tree.body:
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target] if isinstance(node, ast.AnnAssign) else []
+            if any(isinstance(t, ast.Name) and t.id in symbols for t in targets):
+                nodes = node.value.values if module == "library_paths" and isinstance(node.value, ast.Dict) else ast.walk(node.value)
+                result.update(n.value for n in nodes if isinstance(n, ast.Constant) and isinstance(n.value, str) and len(n.value) >= 8)
+    return {s for s in result if "{ck}" not in s} - {"annotated", "supplement", "manuscript", "translation", "preprint", "primary"}
+
 
 def scan_public(name, data, markers=()):
     text = data.decode("utf-8-sig")
@@ -54,21 +132,27 @@ def scan_public(name, data, markers=()):
 
 def export_sources(repo):
     repo = Path(repo).resolve()
+    markers = private_markers(repo)
     result, provenance = {}, []
     for name in SOURCE_ALLOWLIST:
         path = repo / name
         if not path.is_file() or path.is_symlink() or path.resolve() != path.absolute():
             raise ValueError("Missing/unsafe allowlisted input: " + name)
-        content = path.read_bytes()
-        scan_public(name, content)
+        raw = path.read_bytes()
+        content = raw
+        if name.startswith("tools/") and Path(name).stem in RUNTIME_MODULES and name.endswith(".py"):
+            content = portable_python(Path(name).stem, raw.decode("utf-8-sig")).encode("utf-8")
+        scan_public(name, content, markers)
         result[name] = content
-        provenance.append({"path": name, "sha256": hashlib.sha256(content).hexdigest(),
-                           "bytes": len(content)})
+        provenance.append({"path": name, "input_sha256": hashlib.sha256(raw).hexdigest(),
+                           "sha256": hashlib.sha256(content).hexdigest(), "bytes": len(content),
+                           "transformed": raw != content})
     result["README.md"] = result["release/README.md"]
     for document in ("BUILD.md", "PRIVACY.md", "LICENSE_PENDING.md", "BBT_SETUP.md", "THIRD_PARTY_SOURCE_GUIDE.md"):
         result["README.md"] = result["README.md"].replace(f"]({document})".encode(), f"](release/{document})".encode())
+    result["NOT_PUBLISHED"] = b"NOT_PUBLISHED\nLocal review artifacts only. No remote or public repository has been created.\n"
     result["LICENSE_PENDING"] = b"LicensePending\nNo project open-source license has been selected. Do not infer MIT.\n"
-    result["RELEASE.json"] = json.dumps({"version": "0.2.0-beta.8", "status": "public-beta",
+    result["RELEASE.json"] = json.dumps({"version": "0.2.0-beta.9", "status": "public-beta",
         "license": "LicensePending", "platform": "windows-x86_64", "portable_defaults": True,
         "git": "system Git required; explicit installation setup", "real_sync_verified": False}, indent=2).encode() + b"\n"
     result["SOURCE_MANIFEST.json"] = json.dumps({"schema_version": 1, "export": "explicit-allowlist",

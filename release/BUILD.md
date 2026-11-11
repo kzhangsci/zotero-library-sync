@@ -18,14 +18,28 @@ node --test tools/zotero_library_sync/tests/runtime.test.cjs
 保留 `release/vendor` 即可离线重建。`--source-only` 仅构建 XPI 与源码包。
 
 `release/export_rules.py` 是正向 SOURCE_ALLOWLIST，逐个文件读取；不执行整仓复制后排除。
-每项导出记录输入/输出哈希，额外文件不会被带入。发布源码使用独立数据目录和空的历史映射。构建器按清单复制源码并记录哈希。新增模块需要纳入清单，并通过导入和离线安装测试。
+每项导出记录输入/输出哈希，额外文件不会被带入。明确转换包括：
+
+- `library_paths.LEGACY_DEFAULTS` 清空；路径常量改用通用配置。
+- 历史 `PINS`、`EXPLICIT_RENAMES` 清空；删除模块/函数历史叙述与注释。
+- `library_resume.LEGACY_RUN=None`、`LEGACY_PAPERS={}`，发行版拒绝没有所有权基线的历史专用恢复。
+- `intake_new` 仅导出当前 API intake 所需常量和缩写读取函数，旧 daemon 流程不发行。
+- 旧 GLM/Codex/Claude CLI 适配器导出为明确报错的兼容入口；发布版采用用户配置的 API。
+- 凭据默认目录、并发锁目录、校验报告目录在原模块直接接入路径层，指向 DATA；代码根 REPO 不重定义为数据根。
+
+这些转换仅作用于导出字节，个人 checkout 保留兼容行为。对 export 再扫描个人路径、
+已知 item pins、私钥和长 token 形态；不能把这当成未知秘密的数学证明。
+新增运行时模块必须先加入 allowlist，并复查 AST 导入闭包；不自动扩大导出范围。
+发行包包含独立的合成暂停/恢复检查及 `test_library_progress`、`test_qc_protocol`、
+`test_model_pipeline` / `test_model_catalog`，在导出运行时上执行，不依赖私人控制器历史 fixture。
 
 支持 Windows x64 / Zotero 10.0。嵌入式 Python 的 `_pth` 仅包含包内标准库、
 site-packages、tools 和 release，关闭用户 site/PYTHONPATH 继承；不安装 pip。
 依赖原 notice 和 DLL 随包保留。Windows/系统组件本身不是本包分发内容。
 
-版本标签和 manifest 均为 `0.2.0-beta.8`；构建检查 manifest 契约，安装版 Zotero
+版本标签和 manifest 均为 `0.2.0-beta.9`；构建检查 manifest 契约，安装版 Zotero
 schema 检查另记录在本地验收报告中。`.invalid` 更新源表示手动更新，不能宣称更新服务就绪。
 所有 ZIP 使用固定时间戳和排序；相同输入/依赖得到相同 bytes。源码包没有 Git 历史。
 
-公开的 Release 提供源码和 XPI。完整 Windows 包在使用者本机生成。
+正式公开前仍需确定许可证、完成获授权的干净 Windows/Zotero 单篇真实服务验收，
+以及明确更新策略。当前任务只制作可审阅私有包。

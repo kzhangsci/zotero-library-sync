@@ -17,7 +17,7 @@ import zipfile
 
 REPO = Path(__file__).resolve().parent.parent
 SOURCE = REPO / "tools" / "zotero_library_sync"
-VERSION = "0.2.0-beta.8"
+VERSION = "0.2.0-beta.9"
 OUTPUT = REPO / "release" / "dist" / f"library-sync-{VERSION}.xpi"
 # Reserved, deliberately unresolvable hostname: this private build is updated
 # manually. Never point at an invented public repository or a third-party feed.

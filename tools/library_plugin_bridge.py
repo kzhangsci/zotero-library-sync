@@ -4,6 +4,7 @@ import argparse
 import concurrent.futures
 import contextlib
 import copy
+import datetime as dt
 import hmac
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
@@ -22,11 +23,14 @@ import library_sync as workflow
 import library_progress as progress
 from glm_concurrency import FileLock
 from common import REPO
-from library_paths import SECRETS
+from library_paths import LIBRARY, SECRETS
 MANIFEST = SECRETS / 'plugin_bridge.json'
 MAX_BODY = 65536
 PREVIEW_TTL = 600
-CAPABILITIES = ['keys-v1', 'mineru-v1', 'translation-policy-v1', 'credential-reveal-v1', 'model-choices-v1', 'model-profiles-v2', 'model-test-role-v1', 'pause-resume-v1', 'history-v1', 'item-selection-v1', 'source-refresh-v1', 'official-model-catalog-v1', 'tongji-api-v1']
+CATALOG_TTL = 600.0
+CATALOG_QUEUE_LIMIT = 8
+CATALOG_CACHE_LIMIT = 8
+CAPABILITIES = ['keys-v1', 'mineru-v1', 'translation-policy-v1', 'credential-reveal-v1', 'model-choices-v1', 'model-profiles-v2', 'model-test-role-v1', 'pause-resume-v1', 'history-v1', 'item-selection-v1', 'source-refresh-v1', 'official-model-catalog-v1', 'catalog-cache-v1', 'tongji-api-v1', 'preview-rebind-v1']
 REVEAL_ERROR = '无法显示密钥；请检查已保存凭据并明确确认显示。'
 
 class RequestError(ValueError):
@@ -83,6 +87,38 @@ def preview_text(plan):
     lines += ['', '确认后：正本命名与批注副本 → MinerU → 质检 → ' + translation + '校验 → 索引 → 选择性 Git；结果在插件任务页与报告显示，不发送桌面通知。', 'PDF 将交给 MinerU；待处理文本将发送到上面所选 API 服务商。关闭面板不影响后台，请保持 Zotero 运行。']
     return '\n'.join(lines)
 
+def artifact_summary(item):
+    citekey = item.get('citekey')
+    if not isinstance(citekey, str) or not citekey or any((c in citekey for c in '\\"/:*?<>|')) or ('..' in citekey):
+        return {'files': [], 'qc_marked': False}
+    folder = LIBRARY / 'papers' / citekey
+    try:
+        files = [suffix for suffix in ('EN', 'MD', 'ZH', 'Note') if (folder / f'{citekey}_{suffix}.md').is_file()]
+        qc = False
+        for suffix in ('EN', 'MD'):
+            path = folder / f'{citekey}_{suffix}.md'
+            if path.is_file():
+                try:
+                    qc = not workflow._fulltext_lacks_qc(path)
+                except Exception:
+                    qc = False
+                if qc:
+                    break
+        return {'files': files, 'qc_marked': qc}
+    except OSError:
+        return {'files': [], 'qc_marked': False}
+
+def public_items(plan):
+    items = []
+    for item in plan['items']:
+        row = copy.deepcopy(item)
+        row['artifacts'] = artifact_summary(item)
+        items.append(row)
+    return items
+
+def preview_response(plan):
+    return {'preview_id': plan['id'], 'text': preview_text(plan), 'items': public_items(plan), 'deferred': copy.deepcopy(plan.get('deferred', [])), 'model_config': copy.deepcopy(plan.get('model_config'))}
+
 def launch_plan(plan):
     with workflow.launch_lock():
         owner = workflow.active_controller()
@@ -106,21 +142,82 @@ class Service:
 
     def __init__(self):
         self.pool = concurrent.futures.ThreadPoolExecutor(max_workers=2)
+        self.catalog_pool = concurrent.futures.ThreadPoolExecutor(max_workers=2)
         self.lock = threading.RLock()
         self.operations = {}
+        self.operation_kinds = {}
+        self.catalog_merge = {}
+        self.catalog_cache = {}
+        self.catalog_generation = 0
         self.previews = {}
+        self.rebound = {}
         self.last_access = time.monotonic()
 
-    def submit(self, fn, *, exclusive=False):
+    def _prune(self):
+        if len(self.operations) < 64:
+            return
+        for oid, future in list(self.operations.items()):
+            if not future.done():
+                continue
+            del self.operations[oid]
+            self.operation_kinds.pop(oid, None)
+            self.catalog_merge = {key: value for key, value in self.catalog_merge.items() if value[0] != oid}
+            if len(self.operations) < 64:
+                break
+
+    def submit(self, fn, *, catalog=False, merge_key=None, refresh=True):
         with self.lock:
-            if any((not f.done() for f in self.operations.values())):
+            self._prune()
+            if catalog:
+                for key, (oid, refresh_kind) in list(self.catalog_merge.items()):
+                    future = self.operations.get(oid)
+                    if future is None or future.done():
+                        del self.catalog_merge[key]
+                if merge_key is not None and merge_key in self.catalog_merge:
+                    oid, kind = self.catalog_merge[merge_key]
+                    if kind or not refresh:
+                        return {'operation': oid, 'merged': True}
+                pending = [f for oid, f in self.operations.items() if not f.done() and self.operation_kinds.get(oid) == 'catalog']
+                if len(pending) >= CATALOG_QUEUE_LIMIT:
+                    raise RequestError('模型列表请求过多，请稍后重试或手动刷新')
+                oid = str(uuid.uuid4())
+                self.operations[oid] = self.catalog_pool.submit(fn)
+                self.operation_kinds[oid] = 'catalog'
+                if merge_key is not None:
+                    self.catalog_merge[merge_key] = (oid, bool(refresh))
+                return {'operation': oid}
+            if any((not f.done() for oid, f in self.operations.items() if self.operation_kinds.get(oid) != 'catalog')):
                 raise RequestError('已有预检或连接测试进行中，请等待其结果')
-            if len(self.operations) >= 64:
-                oldest = next(iter(self.operations))
-                del self.operations[oldest]
             oid = str(uuid.uuid4())
             self.operations[oid] = self.pool.submit(fn)
+            self.operation_kinds[oid] = 'exclusive'
             return {'operation': oid}
+
+    def _catalog_key(self, selected):
+        return json.dumps({name: selected.get(name) for name in ('provider', 'base_url', 'models_url', 'protocol', 'endpoint_confirmed')}, sort_keys=True, separators=(',', ':'), ensure_ascii=True)
+
+    def fetch_catalog(self, selected, *, refresh):
+        from model_api import model_choices
+        key = self._catalog_key(selected)
+        with self.lock:
+            cached = self.catalog_cache.get(key)
+            if cached is not None and cached['generation'] == self.catalog_generation and (time.monotonic() - cached['at'] < CATALOG_TTL):
+                if not refresh:
+                    return {**copy.deepcopy(cached['result']), 'cache': 'hit'}
+        try:
+            result = model_choices(profile=copy.deepcopy(selected))
+        except Exception:
+            with self.lock:
+                cached = self.catalog_cache.get(key)
+            if cached is not None and cached['generation'] == self.catalog_generation:
+                stale = copy.deepcopy(cached['result'])
+                return {**stale, 'cache': 'stale', 'notice': stale.get('notice', '') + ' 本次刷新失败，保留上次候选（缓存，非实时）。'}
+            raise
+        with self.lock:
+            if len(self.catalog_cache) >= CATALOG_CACHE_LIMIT and key not in self.catalog_cache:
+                self.catalog_cache.pop(next(iter(self.catalog_cache)), None)
+            self.catalog_cache[key] = {'at': time.monotonic(), 'generation': self.catalog_generation, 'result': copy.deepcopy(result)}
+        return result
 
     def get_operation(self, oid):
         if not re.fullmatch('[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}', oid):
@@ -191,8 +288,59 @@ class Service:
             raise RequestError('模型配置在预检时变化，请重新预览')
         with self.lock:
             self.previews = {key: value for key, value in self.previews.items() if time.monotonic() - value[0] < PREVIEW_TTL}
+            self.rebound = {old: new for old, new in self.rebound.items() if new in self.previews}
             self.previews[plan['id']] = (time.monotonic(), copy.deepcopy(plan))
-        return {'preview_id': plan['id'], 'text': preview_text(plan), 'items': plan['items'], 'deferred': plan.get('deferred', [])}
+        return preview_response(plan)
+
+    def _fresh_preview_id(self):
+        while True:
+            candidate = dt.datetime.now().strftime('%Y%m%d_%H%M%S_') + uuid.uuid4().hex[:6]
+            if candidate not in self.previews and (not (workflow.RUNS / candidate).exists()):
+                return candidate
+
+    def rebind_preview(self, payload):
+        from model_api import load_config, validate_config
+        object_fields(payload, {'preview_id', 'confirm'})
+        if payload.get('confirm') is not True:
+            raise RequestError('尚未明确确认，不会更新预演模型')
+        run_id = payload.get('preview_id')
+        progress._run_id(run_id)
+        with self.lock, workflow.launch_lock():
+            seen = set()
+            current = run_id
+            while current in self.rebound and current not in seen:
+                seen.add(current)
+                current = self.rebound[current]
+            value = self.previews.get(current)
+            if value is None or time.monotonic() - value[0] > PREVIEW_TTL:
+                raise RequestError('预览已过期，请重新预演；不会自动重试旧任务')
+            if workflow.active_controller():
+                raise RequestError('已有同步任务；请在任务结束后更新预演模型')
+            if (workflow.RUNS / current / 'confirmed_plan.json').exists():
+                raise RequestError('该预演已提交或已有运行，不能更新模型；请重新预演')
+            plan = value[1]
+            if not plan.get('model_config'):
+                raise RequestError('该预演没有模型绑定，请重新预演')
+            roles = ('qc', 'zh') if any((p.get('require_translation', True) for p in plan['items'])) else ('qc',)
+            config = validate_config(load_config(), require_credentials=True, required_roles=roles)
+            if config == plan['model_config']:
+                result = preview_response(plan)
+                result['rebound'] = True
+                result['unchanged'] = True
+                return result
+            new_id = self._fresh_preview_id()
+            rebound = copy.deepcopy(plan)
+            rebound['id'] = new_id
+            rebound['model_config'] = config
+            self.previews[new_id] = (value[0], rebound)
+            del self.previews[current]
+            if current != run_id:
+                self.rebound[run_id] = new_id
+            self.rebound[current] = new_id
+            self.rebound = {old: new for old, new in self.rebound.items() if new in self.previews}
+            result = preview_response(rebound)
+            result['rebound'] = True
+            return result
 
     def start(self, payload):
         from model_api import load_config, validate_config
@@ -276,11 +424,20 @@ class Service:
             raise RequestError(REVEAL_ERROR)
         if method == 'POST' and path == '/v1/config':
             object_fields(payload, {'config', 'keys'})
+            keys = payload.get('keys') or {}
             with self.lock, workflow.launch_lock():
-                if workflow.active_controller() or any((not f.done() for f in self.operations.values())):
-                    raise RequestError('任务或预检运行中不能改模型配置；结束后再保存')
-                workflow.assert_idle()
-                save_config(payload.get('config'), keys=payload.get('keys'))
+                active = workflow.active_controller()
+                if any((not f.done() for oid, f in self.operations.items() if self.operation_kinds.get(oid) != 'catalog')):
+                    raise RequestError('预检或连接测试运行中不能改模型配置；结束后再保存')
+                if keys:
+                    if active or any((not f.done() for f in self.operations.values())):
+                        raise RequestError('任务或预检运行中不能更新密钥；结束后再保存')
+                    workflow.assert_idle()
+                elif not active:
+                    workflow.assert_idle()
+                save_config(payload.get('config'), keys=keys)
+                if keys:
+                    self.catalog_generation += 1
             return public_config()
         if method == 'POST' and path in ('/v1/keys', '/v1/mineru'):
             object_fields(payload, {'keys'} if path == '/v1/keys' else {'key'})
@@ -290,17 +447,20 @@ class Service:
                 workflow.assert_idle()
                 if path == '/v1/keys':
                     save_keys(payload.get('keys'))
+                    self.catalog_generation += 1
                     return public_config()
                 from mineru_credentials import save_token, public_status
                 save_token(payload.get('key', ''))
                 return public_status()
         if method == 'POST' and path == '/v1/preview':
             return self.submit(lambda: self.make_preview(payload))
+        if method == 'POST' and path == '/v1/preview/rebind':
+            return self.rebind_preview(payload)
         if method == 'POST' and path == '/v1/start':
             return self.start(payload)
         if method == 'POST' and path in ('/v1/models', '/v1/test', '/v1/model/test'):
             fields = {'provider', 'model', 'reasoning_effort', 'effort', 'timeout', 'max_tokens', 'base_url', 'protocol', 'models_url', 'thinking', 'extra_body', 'endpoint_confirmed'}
-            test_fields = {'role'} if path != '/v1/models' else set()
+            test_fields = {'role'} if path != '/v1/models' else {'refresh'}
             object_fields(payload, fields | {'profile'} | test_fields)
             role = payload.get('role', 'qc')
             if type(role) is not str or role not in ('qc', 'zh'):
@@ -309,6 +469,13 @@ class Service:
             if wrapped and set(payload) - ({'profile'} | test_fields):
                 raise RequestError('完整 profile 不能与外层模型字段混用')
             selected = copy.deepcopy(payload['profile'] if wrapped else {k: v for k, v in payload.items() if k != 'role'})
+            if path == '/v1/models':
+                refresh = payload.get('refresh', True)
+                if type(refresh) is not bool:
+                    raise RequestError('模型列表刷新标志必须为布尔值')
+            else:
+                refresh = None
+            selected.pop('refresh', None)
             object_fields(selected, fields)
             if 'effort' in selected:
                 if 'reasoning_effort' in selected:
@@ -320,7 +487,7 @@ class Service:
                 return self.submit(lambda: test_connection(selected['provider'], reasoning_effort=selected.get('reasoning_effort'), role=role))
             selected = validate_profile(selected, for_models=path == '/v1/models')
             if path == '/v1/models':
-                return self.submit(lambda: model_choices(profile=selected))
+                return self.submit(lambda: self.fetch_catalog(selected, refresh=refresh), catalog=True, merge_key=self._catalog_key(selected), refresh=refresh)
             return self.submit(lambda: test_connection(profile=selected, role=role))
         raise RequestError('不支持的操作；此接口不能执行任意命令或读写任意文件')
 
@@ -423,6 +590,7 @@ def serve():
             while time.monotonic() - service.last_access < 1800 or any((not f.done() for f in list(service.operations.values()))):
                 server.handle_request()
         service.pool.shutdown(wait=False)
+        service.catalog_pool.shutdown(wait=False)
     finally:
         lock.release()
     return 0

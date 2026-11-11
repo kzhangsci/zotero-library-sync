@@ -28,8 +28,17 @@ var LibrarySyncPanel = (() => {
       this.selectedRun = null; this.viewEpoch = 0; this.viewKnown = false;
       this.history = []; this.pauseRun = null; this.resumePending = null;
       this.historyLoading = null;
-      this.selections = []; this.rowSignatures = new Map(); this.selectionControls = [];
+      this.selections = []; this.rowSignatures = new Map(); this.selectionControls = []; this.rowDescriptions = new Map();
       this.testStates = {}; this.profileProviders = {};
+      // Model drafts are separate from the discovery scope: editing them keeps
+      // the preview and per-paper selections, only marking the binding stale.
+      this.modelDirty = false;
+      // Catalog state is per (provider, endpoint, protocol, key generation);
+      // requests never use the form-wide this.pending lock. Every submission
+      // takes a per-phase token: a late POST or poll answer from a superseded
+      // request can never overwrite or delete a newer one.
+      this.modelCatalogs = new Map(); this.catalogPending = {}; this.catalogInflight = {}; this.catalogTokens = {};
+      this.keyEpoch = { glm: 0, deepseek: 0, tongji: 0 };
     }
     el(id) { return this.doc.getElementById(id); }
     text(id, value) {
@@ -170,19 +179,20 @@ var LibrarySyncPanel = (() => {
         this.text(phase + "-provider-notice", provider === "tongji"
           ? "已选择同济独立 Key；未改动的地址和模板参数已调整，thinking 固定为 default。请填写校内模型 ID，reasoning_effort 控制思考；手工地址及参数已保留，草稿尚未保存。"
           : "切换服务商仅更新未改动的默认地址；已保留模型及手工参数。请核对 Key 来源、API 地址与模型；可展开高级参数并恢复默认值。");
+        if (provider !== previous) this.autoLoadCatalog(phase);
       }
       if (["model", "thinking", "effort"].includes(field)) this.updateEffortOptions(phase);
       if (["base-url", "models-url", "protocol"].includes(field)) {
         this.endpointConfirmed[phase] = false; this.clearModelOptions(phase);
       }
       delete this.testStates[phase]; this.text(phase + "-test-state", "配置已更改，尚未测试此配置。");
-      this.configDirty = true; this.invalidate(); this.update();
+      this.configDirty = true; this.markModelDirty(); this.update();
     }
     applyProviderDefaults(phase) {
       const provider = this.el(phase + "-provider").value.trim().toLowerCase();
       if (!["glm", "deepseek", "tongji"].includes(provider)) {
         this.text(phase + "-effort-notice", "Provider / Key 来源请填 glm、deepseek 或 tongji；API 地址可另行自填。");
-        this.configDirty = true; this.invalidate(); this.update(); return;
+        this.configDirty = true; this.markModelDirty(); this.update(); return;
       }
       this.el(phase + "-provider").value = provider;
       const defaults = Bridge.profileDefaults(provider);
@@ -193,7 +203,7 @@ var LibrarySyncPanel = (() => {
       this.clearModelOptions(phase); this.updateEffortOptions(phase);
       delete this.testStates[phase]; this.text(phase + "-test-state", "默认参数已恢复，尚未测试。");
       this.text(phase + "-provider-notice", "已将地址、协议、thinking、effort、超时、输出长度及附加参数恢复为插件初始值（不是服务端默认值）；模型 ID 保留，草稿尚未保存，请核对后保存。");
-      this.configDirty = true; this.invalidate(); this.update();
+      this.configDirty = true; this.markModelDirty(); this.update();
     }
     modelContext(phase) {
       return { provider: this.el(phase + "-provider").value.trim().toLowerCase(), model: this.el(phase + "-model").value.trim(),
@@ -267,7 +277,7 @@ var LibrarySyncPanel = (() => {
       this.clearModelOptions(phase);
       delete this.testStates[phase]; this.text(phase + "-test-state", "习惯预设已填入，尚未保存或测试。");
       this.text(phase + "-habit-note", selected.note + ` 已覆盖本角色草稿，尚未保存；thinking=enabled，effort=${profile.reasoning_effort}，输出上限 ${profile.max_tokens}，超时 1500 秒。请核对后保存。`);
-      this.configDirty = true; this.invalidate(); this.update();
+      this.configDirty = true; this.markModelDirty(); this.update();
       this.message(`${phase.toUpperCase()} 已填入“${selected.label}”预设，草稿尚未保存；请核对后点击“保存模型配置”。`);
     }
     confirmEndpoint(phase, profile) {
@@ -279,6 +289,167 @@ var LibrarySyncPanel = (() => {
         this.endpointConfirmed[phase] = true;
       }
       return { ...profile, endpoint_confirmed: true };
+    }
+    catalogIdentity(phase) {
+      // Same provider + endpoint + protocol + credential generation share one
+      // catalog. A key edit bumps the epoch, so late responses cannot apply.
+      const context = this.modelContext(phase);
+      return JSON.stringify([context.provider, Bridge.endpointSignature(context),
+        this.keyEpoch[context.provider] || 0, this.credentials[context.provider] === true]);
+    }
+    catalogCacheGet(identity, ignoreTtl = false) {
+      const entry = this.modelCatalogs.get(identity);
+      if (!entry || !ignoreTtl && Date.now() - entry.at > 600000) return null;
+      return entry;
+    }
+    catalogCacheSet(identity, choices) {
+      if (this.modelCatalogs.size >= 8 && !this.modelCatalogs.has(identity)) {
+        this.modelCatalogs.delete(this.modelCatalogs.keys().next().value);
+      }
+      this.modelCatalogs.set(identity, { choices, at: Date.now() });
+    }
+    autoLoadCatalog(phase) {
+      // Selecting a provider loads its catalog immediately — but only for the
+      // trusted default endpoints and only via the merged, cached request.
+      // Custom addresses always need the explicit button and confirmation.
+      if (this.closed || !this.connected || this.pathsDirty || this.busy || this.pending) return;
+      if (!this.capabilities.includes("model-profiles-v2")) return;
+      const context = this.modelContext(phase);
+      if (context.provider === "tongji" && !this.capabilities.includes("tongji-api-v1")) return;
+      if (!["glm_standard", "glm_coding_plan", "deepseek", "tongji"].includes(Bridge.endpointKind(context))) return;
+      const options = this.modelOptions[phase];
+      if (options?.provider === context.provider && options.endpoint === Bridge.endpointSignature(context)) return;
+      void this.catalogAction(phase, false);
+    }
+    async catalogAction(phase, force) {
+      // Model listings never enter this.pending: fetching a catalog must not
+      // lock the whole form, and QC/ZH may load different catalogs in parallel.
+      if (this.closed) return;
+      let submitted = false;
+      try {
+        if (this.busy || this.pending) return;
+        if (!this.connected || this.pathsDirty) throw new Bridge.SafeError("CONNECT", "请先连接 bridge。");
+        if (!this.capabilities.includes("model-profiles-v2")) throw new Bridge.SafeError("CAPABILITY", "请更新空闲的 bridge 后重新连接，新模型参数不能发送给旧服务。");
+        let model = Bridge.profile(this.readModel(phase), true);
+        if (model.provider === "tongji" && !this.capabilities.includes("tongji-api-v1")) throw new Bridge.SafeError("CAPABILITY", "本机服务尚不支持同济 API，请更新 bridge 后重新连接；尚未发送请求。");
+        const docsOnly = Bridge.publicModelDocs(model);
+        // Official GLM documentation fetching is credential-free. Listings for
+        // any other endpoint follow the existing endpoint confirmation.
+        if (!docsOnly) model = this.confirmEndpoint(phase, model);
+        if (!this.credentials[model.provider] && !docsOnly) throw new Bridge.SafeError("CONFIG", "请先保存所选 provider 的密钥。");
+        const typed = this.el(model.provider + "-key").value;
+        if (typed && typed !== this.loadedKeys[model.provider]) {
+          // A draft key must not be presented as the saved account: save first.
+          throw new Bridge.SafeError("CONFIG", "该服务商 Key 已修改但尚未保存；请先保存 Key 再获取模型目录，目录不代表未保存的草稿凭据。");
+        }
+        const identity = this.catalogIdentity(phase);
+        const pending = this.catalogPending[phase];
+        // In flight from submission until the pending record exists: rapid
+        // repeated same-identity clicks merge into the one request instead of
+        // racing duplicate remote POSTs past the record check.
+        if (pending?.identity === identity || this.catalogInflight[phase]?.identity === identity) return;
+        if (!force) {
+          const cached = this.catalogCacheGet(identity);
+          if (cached) { this.presentModelChoices(phase, cached.choices, "hit"); return; }
+          const stale = this.catalogCacheGet(identity, true);
+          if (stale) this.presentModelChoices(phase, stale.choices, "stale"); // Show, then still fetch fresh below.
+        }
+        this.text(phase + "-model-notice", force
+          ? "正在获取模型列表；成功后替换当前候选，失败保留现有候选。"
+          : "正在按所选服务商自动获取模型列表（默认可信地址）；失败保留现有候选。");
+        submitted = true;
+        // The token is taken BEFORE the request: a slower, older POST resolving
+        // later must not overwrite the record of a newer submission.
+        const token = (this.catalogTokens[phase] = (this.catalogTokens[phase] || 0) + 1);
+        this.catalogInflight[phase] = { identity, token };
+        let id;
+        try {
+          // Old bridges reject unknown body fields: refresh:false only goes to
+          // bridges advertising catalog-cache-v1; the legacy body means "fetch
+          // live", which is what a forced refresh does anyway.
+          id = await this.client.models(model.provider, model,
+            this.capabilities.includes("catalog-cache-v1") ? force : true);
+        } finally {
+          if (this.catalogInflight[phase]?.token === token) delete this.catalogInflight[phase];
+        }
+        if (this.closed || this.catalogTokens[phase] !== token) return;
+        this.catalogPending[phase] = { phase, id, token, identity, provider: model.provider, endpoint: Bridge.endpointSignature(model) };
+        if (force) this.text("model-result", `操作 ${id} · 读取模型列表`);
+        this.update();
+      } catch (e) {
+        if (this.closed) return;
+        if (submitted) {
+          this.text(phase + "-model-notice", "本次模型列表请求失败；保留现有候选与手填模型，可重试。");
+          this.text("model-result", "模型列表请求失败；上次候选（如有）保留，不当作本次结果。可重试或手填模型 ID。");
+        }
+        this.error(e);
+      }
+    }
+    applyRawCatalog(phase, record, raw) {
+      if (this.closed) return;
+      let choices;
+      try { choices = Bridge.modelChoices(raw, record.provider); }
+      catch (_) {
+        this.text(phase + "-model-notice", "本次模型列表响应无效；保留现有候选，请重试或手填模型 ID。");
+        this.text("model-result", "模型列表响应无效；当前模型及参数未改动。");
+        return;
+      }
+      if (this.el(phase + "-provider").value.trim().toLowerCase() !== record.provider) {
+        this.message("服务商已改变，丢弃旧模型列表；当前模型未改动。"); return;
+      }
+      const current = this.modelContext(phase);
+      if (!record.endpoint || record.endpoint !== Bridge.endpointSignature(current)) {
+        this.message("API 地址或协议已改变，旧模型列表未应用。"); return;
+      }
+      if (this.catalogIdentity(phase) !== record.identity) {
+        this.message("Key 或配置已改变，本次目录响应未应用。"); return;
+      }
+      if (choices.cache === "stale") {
+        // The bridge kept its last trusted list after a failed refresh.
+        this.presentModelChoices(phase, choices, "stale");
+        this.message("本次目录刷新失败，已显示上次候选（缓存，非实时）；可重试或手填模型 ID。", true);
+        return;
+      }
+      if (choices.endpoint_kind && choices.endpoint_kind !== Bridge.catalogEndpointKind(current)) {
+        this.clearModelOptions(phase);
+        this.message("模型列表端点类型与当前 API 地址不符，列表未应用；请重新获取或手填。", true); return;
+      }
+      if (Bridge.endpointKind(current) === "glm_coding_plan") {
+        const models = choices.models.filter(id => ["glm-5.3", "glm-5.3-flash"].includes(id));
+        choices = { ...choices, models, details: Object.fromEntries(models.filter(id => Object.hasOwn(choices.details, id)).map(id => [id, choices.details[id]])) };
+      }
+      // A bridge cache hit must not renew the panel-side TTL: repeated hits
+      // can never extend a stale entry's lifetime.
+      if (choices.cache !== "hit") this.catalogCacheSet(record.identity, choices);
+      this.presentModelChoices(phase, choices, choices.cache === "hit" ? "hit" : "");
+      this.message("模型候选已载入，当前模型保持不变。"); this.update();
+    }
+    presentModelChoices(phase, choices, cacheMode = "") {
+      if (this.closed) return;
+      const context = this.modelContext(phase);
+      this.modelOptions[phase] = { ...choices, endpoint: Bridge.endpointSignature(context),
+        epoch: this.keyEpoch[context.provider] || 0 };
+      this.pickers[phase + "-model"]?.setOptions(choices.models.map(id => ({ value: id,
+        label: this.client.redact(choices.details[id]?.display_name ? `${choices.details[id].display_name} · API ID: ${id}` : id) })));
+      this.updateEffortOptions(phase);
+      const source = { bundled_catalog: "内置官方文档候选（非实时，不是账号可用清单）",
+        official_docs: "本次联网获取的官方文档候选（不是账号可用清单）",
+        official_cache: "官方文档缓存候选（非实时，不是账号可用清单）",
+        provider_api: "本次服务商 API 返回的模型列表（不保证调用权限）" }[choices.source];
+      // A served cache is never wording-level evidence of a fresh live listing.
+      const cachedSources = { provider_api: "缓存的服务商 API 模型列表（非实时，不保证调用权限）",
+        official_docs: "缓存的官方文档候选（非实时，不是账号可用清单）",
+        official_cache: "官方文档缓存候选（非实时，不是账号可用清单）",
+        bundled_catalog: "内置官方文档候选（非实时，不是账号可用清单）" };
+      const labeled = cacheMode ? (cachedSources[choices.source] || source) : source;
+      const cacheNote = cacheMode === "hit" ? "缓存命中（10 分钟内，本次未发起新请求）。"
+        : cacheMode === "stale" ? "上次候选缓存（非实时；获取时间见下）。" : "";
+      const note = `${cacheNote}${labeled}；${choices.models.length} 项。获取时间：${choices.fetched_at || "未提供"}。` +
+        (choices.endpoint_kind ? `端点类型：${choices.endpoint_kind}。` : "") + (choices.reference ? `参考：${choices.reference}` : "");
+      this.text(phase + "-model-notice", note);
+      this.text("model-result", `${phase.toUpperCase()}：${note}\n${choices.notice}\n展示名 / 版本名仅供识别，请求使用 API ID。选择已知模型会在本角色草稿填写最高参数，请保存模型配置。候选列表不能代替实际测试。`);
+      this.modelResultPhase = phase;
+      this.update();
     }
     async init(selected = false) {
       const paths = this.host.getPaths();
@@ -355,7 +526,14 @@ var LibrarySyncPanel = (() => {
         }
       }
       for (const id of ["glm-key", "deepseek-key", "tongji-key"]) this.listen(id, "input", () => {
-        this.configDirty = true; this.invalidate(); this.update();
+        const provider = id.replace("-key", "");
+        this.keyEpoch[provider] = (this.keyEpoch[provider] || 0) + 1; // Catalog identity changes with credentials.
+        // A draft key retires the old account's listing; the typed model stays.
+        for (const phase of ["qc", "zh"]) if (this.el(phase + "-provider").value === provider) {
+          this.clearModelOptions(phase);
+          this.text(phase + "-model-notice", "该服务商 Key 已修改但尚未保存；现有候选已作废，请先保存 Key 再获取目录。");
+        }
+        this.configDirty = true; this.update();
       });
       for (const id of ["repo", "pythonw"]) this.listen(id, "input", () => {
         this.clearSecrets(); this.pathsDirty = true; this.invalidate(); this.update();
@@ -369,7 +547,7 @@ var LibrarySyncPanel = (() => {
         }
         this.invalidate(); this.update();
       });
-      this.listen("mineru-key", "input", () => { this.invalidate(); this.update(); });
+      this.listen("mineru-key", "input", () => this.update());
       if (selected) this.captureSelection();
       this.update();
       // Initial open is read-only. Only the explicit connect button can launch a service.
@@ -378,11 +556,17 @@ var LibrarySyncPanel = (() => {
     }
     invalidate() {
       this.preview = null; this.startResult = null; this.startAttempted = false;
+      this.modelDirty = false;
       this.selections = []; this.selectionControls = [];
       this.text("operation", "范围或配置已改变，请重新预演");
       this.text("preview-text", "尚无有效预演。请先预演再确认开始。");
       this.el("preview-rows").replaceChildren();
       this.el("deferred-notice").hidden = true; this.text("deferred-notice", "");
+    }
+    markModelDirty() {
+      if (!this.preview || this.startAttempted) return;
+      this.modelDirty = true;
+      this.text("operation", `预演 ${this.preview.preview_id} 保留；模型草稿已修改，保存后自动更新预演绑定，逐篇选择不变`);
     }
     update() {
       if (this.closed) return;
@@ -392,6 +576,7 @@ var LibrarySyncPanel = (() => {
       const activeReason = this.active ? "已有任务正在运行；修改可留作下次任务草稿" : "";
       const readyReason = connectionReason || this.requiredTongjiReason() || (!this.configurationReady() ? "请先保存所需模型配置与 Key" : "") ||
         (this.configDirty ? "存在未保存修改，请先保存配置" : "") ||
+        (this.modelDirty ? "模型配置已修改，保存后需更新预演绑定或重新预演" : "") ||
         (!this.capabilities.includes("translation-policy-v1") ? "请更新服务以支持翻译选项" : "");
       const refreshReason = !this.capabilities.includes("source-refresh-v1") ? "本机 bridge 不支持更换全文 PDF，请更新 bridge 后重新连接。" : "";
       const refreshPreviewReason = this.el("refresh-source").checked ? refreshReason : "";
@@ -401,7 +586,8 @@ var LibrarySyncPanel = (() => {
       this.disable("select-items", lockReason);
       this.disable("reload-config", lockReason || connectionReason);
       for (const [id, capability] of [["save-config", "model-profiles-v2"], ["save-keys", "keys-v1"], ["save-mineru", "mineru-v1"]]) {
-        this.disable(id, lockReason || connectionReason || activeReason ||
+        this.disable(id, lockReason || connectionReason ||
+          (id !== "save-config" ? activeReason : "") ||
           (id !== "save-mineru" && this.tongjiSupportReason(id === "save-keys") || "") ||
           (!this.capabilities.includes(capability) ? "本机服务不支持此设置，请更新服务" : ""));
       }
@@ -458,7 +644,7 @@ var LibrarySyncPanel = (() => {
           (this.startAttempted ? "该预演已提交，逐篇选项已固定" : locked ? lockReason : "请先包含此文献") : "");
       }
       this.text("draft-state", (this.active ? "运行中的任务使用冻结配置；这里的修改用于下一次任务。" : "配置用于下次任务。") +
-        (this.configDirty ? " 有未保存修改。" : " 当前无未保存的模型修改。"));
+        (this.configDirty ? " 有未保存修改。" : this.modelDirty ? " 模型已保存，但预演绑定未更新；开始前需更新绑定或重新预演。" : " 当前无未保存的模型修改。"));
       this.updateKeyDisplays();
     }
     async action(fn, allowPending = false) {
@@ -515,6 +701,9 @@ var LibrarySyncPanel = (() => {
         this.currentStatus = null; this.displayedStatus = null; this.selectedRun = null;
         this.viewKnown = false; this.viewEpoch++; this.pauseRun = null; this.resumePending = null;
         this.history = []; this.rowSignatures.clear(); this.el("history-rows").replaceChildren();
+        this.modelCatalogs.clear(); this.catalogPending = {};
+        // Supersede any in-flight catalog POST from the previous repository.
+        this.catalogTokens = { qc: (this.catalogTokens.qc || 0) + 1, zh: (this.catalogTokens.zh || 0) + 1 };
         this.text("history-notice", "尚未读取新目录的历史。"); this.text("task-notice", "");
         this.text("frozen-config", "暂无本任务配置。"); this.el("status-error").hidden = true; this.el("copy-status").hidden = true;
         this.el("repo").value = value.repo; this.el("pythonw").value = value.pythonw;
@@ -601,42 +790,79 @@ var LibrarySyncPanel = (() => {
             if (!this.closed && epoch === this.epoch && viewEpoch === this.viewEpoch) this.displayStatus(value, true);
           } catch (e) { if (!this.closed && epoch === this.epoch && viewEpoch === this.viewEpoch) this.statusError(e, true); }
         }
-        if (this.closed || epoch !== this.epoch || !this.connected || !this.pending) return;
-        const pending = this.pending;
-        let result;
-        try { result = await this.client.operation(pending.id); }
-        catch (e) {
-          if (!this.closed && epoch === this.epoch && pending === this.pending) {
-            this.error(e);
-            if (e.code === "HTTP" && [400, 404, 410].includes(e.httpStatus)) {
-              this.pending = null;
-              if (pending.kind === "preview") this.invalidate();
-              this.text("operation", "操作已失效，请重新预演或测试");
-            }
-          }
-          return;
-        }
-        if (this.closed || epoch !== this.epoch || pending !== this.pending) return;
-        if (result.status !== "running") {
-          this.pending = null;
-          if (result.status === "failed") {
-            if (pending.kind === "preview") {
-              this.preview = null;
-              this.text("operation", "操作失败 · " + pending.id);
-              this.message("预演失败：" + this.client.redact(result.error || "请查看报告"), true);
-            } else {
-              const detail = result.error === "model_listing_not_supported"
-                ? "当前服务不支持模型列表查询；请更新到新版候选列表，或手填模型 ID。Key 保存状态未改变。"
-                : "模型操作失败：" + this.client.redact(result.error || "请检查所选服务商、模型及权限");
-              this.text("model-result", detail); this.message(detail, true);
-              if (pending.kind === "models") {
-                this.clearModelOptions(pending.phase);
-                this.text(pending.phase + "-model-notice", "本次获取模型列表失败；旧列表已作废，请重试或手填模型 ID。");
+        if (this.closed || epoch !== this.epoch || !this.connected) return;
+        if (this.pending) {
+          const pending = this.pending;
+          let result;
+          try { result = await this.client.operation(pending.id); }
+          catch (e) {
+            if (!this.closed && epoch === this.epoch && pending === this.pending) {
+              this.error(e);
+              if (e.code === "HTTP" && [400, 404, 410].includes(e.httpStatus)) {
+                this.pending = null;
+                if (pending.kind === "preview") this.invalidate();
+                this.text("operation", "操作已失效，请重新预演或测试");
               }
-              if (pending.kind === "test") this.text(pending.phase + "-test-state", "测试失败 · " + new Date().toLocaleString());
             }
-          } else if (pending.kind === "preview") this.renderPreview(result.result);
-          else this.renderModelResult(pending, result.result);
+            return;
+          }
+          if (this.closed || epoch !== this.epoch || pending !== this.pending) return;
+          if (result.status !== "running") {
+            this.pending = null;
+            if (result.status === "failed") {
+              if (pending.kind === "preview") {
+                this.preview = null;
+                this.text("operation", "操作失败 · " + pending.id);
+                this.message("预演失败：" + this.client.redact(result.error || "请查看报告"), true);
+              } else {
+                const detail = result.error === "model_listing_not_supported"
+                  ? "当前服务不支持模型列表查询；请更新到新版候选列表，或手填模型 ID。Key 保存状态未改变。"
+                  : "模型操作失败：" + this.client.redact(result.error || "请检查所选服务商、模型及权限");
+                this.text("model-result", detail); this.message(detail, true);
+                if (pending.kind === "test") this.text(pending.phase + "-test-state", "测试失败 · " + new Date().toLocaleString());
+              }
+            } else if (pending.kind === "preview") this.renderPreview(result.result);
+            else this.renderModelResult(pending, result.result);
+          }
+        }
+        // Model catalog listings poll independently: they never locked the form
+        // and their late responses are dropped when the endpoint or key epoch
+        // has moved on. All pending listings are polled in parallel so one slow
+        // role cannot delay another role's completed result.
+        if (this.closed || epoch !== this.epoch || !this.connected) return;
+        const phases = Object.keys(this.catalogPending);
+        if (!phases.length) return;
+        const polled = await Promise.all(phases.map(async phase => {
+          const record = this.catalogPending[phase];
+          if (!record) return null;
+          try { return { phase, record, result: await this.client.operation(record.id) }; }
+          catch (e) { return { phase, record, error: e }; }
+        }));
+        if (this.closed || epoch !== this.epoch || !this.connected) return;
+        for (const entry of polled) {
+          if (!entry) continue;
+          const { phase, record } = entry;
+          // A newer submission for this phase must keep its own record.
+          if (this.catalogPending[phase] !== record) continue;
+          if (entry.error) {
+            delete this.catalogPending[phase];
+            this.text(phase + "-model-notice", "本次模型列表请求失败；保留现有候选与手填模型，可重试。");
+            if (entry.error.code === "HTTP" && [400, 404, 410].includes(entry.error.httpStatus)) {
+              this.text("model-result", "目录操作已失效，请重新获取或手填模型 ID。");
+            } else this.error(entry.error);
+            continue;
+          }
+          if (entry.result.status !== "running") {
+            delete this.catalogPending[phase];
+            if (entry.result.status === "failed") {
+              const detail = entry.result.error === "model_listing_not_supported"
+                ? "当前服务不支持模型列表查询；请更新到新版候选列表，或手填模型 ID。Key 保存状态未改变。"
+                : "模型列表获取失败：" + this.client.redact(entry.result.error || "请检查所选服务商、模型及权限");
+              this.text("model-result", detail + "；上次候选（如有）保留。");
+              this.text(phase + "-model-notice", "本次获取失败；保留现有候选与手填模型，可重试或手填模型 ID。");
+              this.message(detail, true);
+            } else this.applyRawCatalog(phase, record, entry.result.result);
+          }
         }
       } catch (e) { if (!this.closed && epoch === this.epoch) this.error(e); }
       finally { this.ticking = false; this.update(); }
@@ -858,8 +1084,15 @@ var LibrarySyncPanel = (() => {
         seen.add(p.key);
         deferred.push(p);
       }
-      return { discovered: discovered.size, ready: items.filter(p => !p.blocked?.length).length,
-               deferredCount: deferred.length, deferred };
+      const choices = new Map((this.selections || []).map(row => [row.key, row]));
+      const readyItems = items.filter(p => !p.blocked?.length);
+      // Classification follows the CURRENT per-paper translation choices: an
+      // item is "pending review" only when every required step already has
+      // its artifact, and that still never claims QA acceptance.
+      const review = readyItems.filter(p => this.reviewItem(p, choices.get(p.key))).length;
+      return { discovered: discovered.size, ready: readyItems.length,
+               deferredCount: deferred.length, deferred,
+               fresh: readyItems.length - review, review };
     }
     renderPreview(result) {
       if (!result || !Bridge.RUN_ID.test(result.preview_id) || typeof result.text !== "string" ||
@@ -867,7 +1100,7 @@ var LibrarySyncPanel = (() => {
         throw new Bridge.SafeError("PROTOCOL", "预演响应不完整，请检查 bridge 合同。");
       }
       this.preview = result; this.startResult = null;
-      this.startAttempted = false;
+      this.startAttempted = false; this.modelDirty = false;
       this.selections = result.items.map(p => ({ key: p.key, include: !p.blocked?.length,
         translate: p.require_translation !== false && p.translate !== false && this.el("translate").checked }));
       if (new Set(result.items.map(p => p.key)).size !== result.items.length ||
@@ -911,11 +1144,10 @@ var LibrarySyncPanel = (() => {
             }
             tr.appendChild(cell);
           }
-          const actions = Array.isArray(p.actions) ? p.actions.map(a => typeof a === "string" ? a : a?.action).filter(Boolean).join("、") : "";
-          const reason = Array.isArray(p.blocked) && p.blocked.length ? p.blocked.join("；") : p.reason || p.note || "按预演计划执行";
-          for (const value of [p.citekey || p.key, p.title, [reason, actions && "待执行：" + actions].filter(Boolean).join("；")]) {
+          for (const value of [p.citekey || p.key, p.title, this.rowDescription(p, deferred)]) {
             const cell = this.doc.createElementNS(htmlNS, "td"); cell.textContent = this.client.redact(value || "—"); tr.appendChild(cell);
           }
+          this.rowDescriptions.set(p.key, tr.children[tr.children.length - 1]);
           target.appendChild(tr);
         }
       }
@@ -925,7 +1157,8 @@ var LibrarySyncPanel = (() => {
       const selected = this.selections.filter(row => row.include);
       const counts = this.previewCounts();
       const countsText = this.preview
-        ? `发现 ${counts.discovered} 篇：可执行 ${counts.ready} 篇、暂缓 ${counts.deferredCount} 篇。`
+        ? `发现 ${counts.discovered} 篇：可执行 ${counts.ready} 篇、暂缓 ${counts.deferredCount} 篇；` +
+          `可执行中预计需补齐产物 ${counts.fresh} 篇、已有成果待复核 ${counts.review} 篇（复核仍需完整 QA 验收，不代表已通过）。`
         : "";
       this.text("selection-notice", countsText + `已选 ${selected.length} 篇，其中 ${selected.filter(row => row.translate).length} 篇允许按需翻译。预演原件保留，逐篇选项将在提交时由后台校验冻结；不会删除已有译文。`);
       const notice = this.el("deferred-notice");
@@ -940,7 +1173,41 @@ var LibrarySyncPanel = (() => {
       if (!this.selectionControls.includes(control) || control.disabled || this.busy || this.pending || this.startAttempted) return;
       const choice = this.selections.find(row => row.key === control.selectionKey);
       choice[control.selectionField] = control.checked === true;
+      // Rewrite only this row's wording in place: a full re-render would reset
+      // the checkboxes and steal focus while the user toggles options.
+      const item = this.preview?.items.find(p => p.key === control.selectionKey);
+      const cell = this.rowDescriptions.get(control.selectionKey);
+      if (item && cell) cell.textContent = this.client.redact(this.rowDescription(item, false) || "—");
       this.selectionSummary(); this.update();
+    }
+    rowDescription(p, deferred) {
+      // Third-cell wording: plan reason, queued actions and the work
+      // classification under the CURRENT per-paper choices.
+      const actions = Array.isArray(p.actions) ? p.actions.map(a => typeof a === "string" ? a : a?.action).filter(Boolean).join("、") : "";
+      const missing = this.workClassification(p, this.selections.find(row => row.key === p.key));
+      const workTag = deferred || p.blocked?.length ? "" : missing.length
+        ? `预计需补齐产物（缺${missing.join("、")}）`
+        : "已有成果待复核（仍需完整 QA 验收，不代表已通过）";
+      const reason = Array.isArray(p.blocked) && p.blocked.length ? p.blocked.join("；") : p.reason || p.note || "按预演计划执行";
+      return [reason, actions && "待执行：" + actions, workTag].filter(Boolean).join("；");
+    }
+    workClassification(p, choice) {
+      // Display-only classification from the checked artifacts and the CURRENT
+      // per-paper plan: any missing required step (fulltext, QC marker, note,
+      // needed translation) means work is expected; everything present is only
+      // "pending review" and never claims QA acceptance.
+      const files = Array.isArray(p?.artifacts?.files) ? p.artifacts.files : [];
+      const qcMarked = p?.artifacts?.qc_marked === true;
+      const missing = [];
+      if (!files.includes("EN") && !files.includes("MD")) missing.push("原文");
+      else if (!qcMarked) missing.push("质检");
+      if (!files.includes("Note")) missing.push("笔记");
+      const needsTranslation = p?.require_translation !== false && choice?.translate !== false;
+      if (needsTranslation && !files.includes("ZH")) missing.push("中译");
+      return missing;
+    }
+    reviewItem(p, choice) {
+      return this.workClassification(p, choice).length === 0;
     }
     start() {
       if (this.closed) return;
@@ -950,6 +1217,7 @@ var LibrarySyncPanel = (() => {
       return this.action(async () => {
         this.requireReady();
         if (!this.preview) throw new Bridge.SafeError("PREVIEW", "请先完成预演。");
+        if (this.modelDirty) throw new Bridge.SafeError("CONFIG", "模型配置已修改且预演绑定未更新；请先保存并更新绑定，或重新预演。");
         const selections = Bridge.selections(this.selections);
         const id = this.preview.preview_id;
         // Refresh both server gates immediately before the irreversible confirmation.
@@ -962,7 +1230,16 @@ var LibrarySyncPanel = (() => {
         if (!this.configurationReady(current)) { this.fillConfig(current); throw new Bridge.SafeError("CONFIG", "服务尚未完整配置，不能开始同步。"); }
         if (this.active && !this.startAttempted) throw new Bridge.SafeError("ACTIVE", "已有任务运行，请查看状态。");
         const counts = this.previewCounts(this.preview);
-        const yes = this.window.confirm(`确认执行预演 ${id}？\n本次选择 ${selections.filter(p => p.include).length} 篇，其中 ${selections.filter(p => p.include && p.translate).length} 篇允许按需翻译；暂缓 ${counts.deferredCount} 篇。\n` +
+        // Show the exact frozen models before the irreversible confirmation.
+        const roles = ["qc", ...(selections.some(p => p.include && p.translate) ? ["zh"] : [])];
+        const modelLines = roles.map(role => {
+          const p = current.config?.[role];
+          return role.toUpperCase() + ": " + (p ? `${p.provider} / ${p.model}，effort=${p.reasoning_effort}` : "未提供");
+        }).join("；");
+        const itemOf = key => this.preview.items.find(p => p.key === key) || {};
+        const choiceOf = key => selections.find(row => row.key === key);
+        const yes = this.window.confirm(`确认执行预演 ${id}？\n本次选择 ${selections.filter(p => p.include).length} 篇，其中 ${selections.filter(p => p.include && p.translate).length} 篇允许按需翻译、预计需补齐产物 ${selections.filter(p => p.include && !this.reviewItem(itemOf(p.key), choiceOf(p.key))).length} 篇、已有成果待复核 ${selections.filter(p => p.include && this.reviewItem(itemOf(p.key), choiceOf(p.key))).length} 篇（仍需完整验收）；暂缓 ${counts.deferredCount} 篇。\n` +
+          `本次任务冻结模型：${modelLines}。\n` +
           (selections.some(p => p.include && p.translate) ? "本次按逐篇选项执行原文、QC、按需翻译及收尾。" : "本次执行原文、QC 及收尾，不新增译文。") + "已有译文保留。" +
           "关闭本面板不会停止任务，请保持 Zotero 运行。\n是否开始？");
         if (!yes || this.closed) return;
@@ -1005,10 +1282,17 @@ var LibrarySyncPanel = (() => {
         }
         const options = this.modelOptions[phase];
         if (options?.provider !== profile.provider || options?.endpoint &&
-            options.endpoint !== JSON.stringify([profile.base_url, profile.models_url, profile.protocol])) this.clearModelOptions(phase);
+            options.endpoint !== JSON.stringify([profile.base_url, profile.models_url, profile.protocol]) ||
+            (options.epoch ?? 0) !== (this.keyEpoch[profile.provider] || 0)) this.clearModelOptions(phase);
+        if (!this.modelOptions[phase]) {
+          // QC and ZH with the same trusted catalog share one cached listing.
+          const cached = this.catalogCacheGet(this.catalogIdentity(phase));
+          if (cached) this.presentModelChoices(phase, cached.choices, "hit");
+        }
         this.updateEffortOptions(phase);
         this.updateHabitNote(phase);
       }
+      if (!preserveDraft) this.modelDirty = false;
       this.text("config-state", !verified ? "请先点击顶部“连接 / 启动服务”；连接后才能保存模型配置。"
         : preserveDraft ? "已连接；保留尚未保存的输入，请点击“保存模型配置”。"
         : value.configured ? "配置已保存。QC 与 ZH 独立选择；保存不等于已验证模型可用。" : "尚未完整配置；可先仅保存 Key，再填 QC 与 ZH 的模型 ID。运行状态仍可查看。");
@@ -1034,21 +1318,75 @@ var LibrarySyncPanel = (() => {
         if (normalized) for (const phase of ["qc", "zh"]) normalized[phase] = this.confirmEndpoint(phase, normalized[phase]);
         const keys = this.changedKeys(["glm", "deepseek", "tongji"]);
         if (keysOnly && !Object.keys(keys).length) { this.message("Key 没有修改，无需重复保存。"); return; }
+        if (this.active && Object.keys(keys).length) throw new Bridge.SafeError("CONFIG", "已有任务运行，不能更新密钥；请等待任务结束后保存，或仅保存模型（不改 Key）。");
         // A broken JSON/model draft must never prevent independent Key storage.
         const keepModelDraft = keysOnly && (this.configDirty || ["qc", "zh"].some(phase =>
           this.el(phase + "-model").value !== this.savedConfig?.[phase]?.model));
+        const hadPreview = !!this.preview && !this.startAttempted;
         try {
-          this.invalidate();
+          // The preview and per-paper selections are deliberately NOT cleared
+          // here: a failed save must not lose the list.
           const value = keysOnly ? await this.client.saveKeys(keys) : await this.client.saveConfig(normalized, keys);
           if (this.closed) return;
           for (const [p, key] of Object.entries(keys)) { this.loadedKeys[p] = key; this.keyDirty[p] = false; }
           this.fillConfig(value, true, keepModelDraft);
+          // Saved credential changes retire that provider's listings only; the
+          // typed model and other providers' catalogs are untouched.
+          for (const p of Object.keys(keys)) {
+            this.keyEpoch[p] = (this.keyEpoch[p] || 0) + 1;
+            for (const phase of ["qc", "zh"]) if (this.el(phase + "-provider").value === p) {
+              this.clearModelOptions(phase);
+              this.text(phase + "-model-notice", "Key 已更新保存；旧目录已按新凭据作废，请重新获取。手填模型 ID 保留。");
+            }
+          }
           this.message(`${keysOnly ? "API Keys" : "模型配置"}已由本机服务确认保存。Key 保留在输入框，可手动显示 / 隐藏；保存不验证有效期。`);
+          if (hadPreview && !keysOnly) await this.rebindPreview();
         } catch (e) {
           this.text("credentials", "本次保存未获确认；输入已保留。请核实后重试，或重新读取已存配置。");
           throw e;
         } finally { keys.glm = ""; keys.deepseek = ""; keys.tongji = ""; }
       });
+    }
+    async rebindPreview() {
+      // After saving new models, lightly rebind the existing preview instead of
+      // rescanning the library. Scope, order, attachment plan, deferred entries
+      // and per-paper selections survive; the original preview TTL still applies.
+      if (this.closed || !this.preview || this.startAttempted) return;
+      if (!this.capabilities.includes("preview-rebind-v1")) {
+        this.modelDirty = true;
+        this.text("operation", "本机 bridge 不支持预演模型更新；开始前请重新预演（逐篇选择已保留）");
+        this.message("已保存模型配置，但本机 bridge 不支持预演模型更新；本次预演仍绑定保存前的模型，开始前请重新预演。逐篇选择已保留。", true);
+        return;
+      }
+      try {
+        const result = await this.client.rebind(this.preview.preview_id);
+        if (this.closed) return;
+        this.renderRebind(result);
+        this.message("已按新保存的模型更新预演绑定；检测范围、附件计划、待办与逐篇选择保留，无需重新检测。");
+      } catch (e) {
+        if (this.closed) return;
+        this.modelDirty = true;
+        this.text("operation", "预演模型更新失败；预演保留原绑定，开始前请重新预演或再次保存。");
+        this.error(e);
+      }
+    }
+    renderRebind(result) {
+      if (!result || result.rebound !== true || typeof result.text !== "string" ||
+          !Array.isArray(result.items) || !Array.isArray(result.deferred)) {
+        throw new Bridge.SafeError("PROTOCOL", "预演模型更新响应不完整，请检查 bridge 合同。");
+      }
+      const currentKeys = this.selections.map(row => row.key);
+      if (JSON.stringify(result.items.map(p => p.key)) !== JSON.stringify(currentKeys)) {
+        this.modelDirty = true;
+        throw new Bridge.SafeError("PROTOCOL", "预演模型更新的条目与当前选择不一致；请重新预演。");
+      }
+      this.preview = result;
+      this.modelDirty = false;
+      this.text("preview-text", result.text);
+      const counts = this.previewCounts(result);
+      this.text("operation", `预演模型已更新 · ${result.preview_id} · 发现 ${counts.discovered} 篇 · 可执行 ${counts.ready} 篇 · 暂缓 ${counts.deferredCount} 篇`);
+      this.selectionSummary();
+      this.update();
     }
     fillMineru(value) {
       this.mineruConfigured = value.configured;
@@ -1062,7 +1400,6 @@ var LibrarySyncPanel = (() => {
         if (!this.connected || this.pathsDirty) throw new Bridge.SafeError("CONNECT", "请先连接 bridge；尚未发送，输入保留。");
         let key = this.changedKeys(["mineru"]).mineru;
         if (!key) { this.message("MinerU Key 没有修改，无需重复保存。"); return; }
-        this.invalidate();
         try {
           this.fillMineru(await this.client.saveMineru(key));
           if (this.closed) return;
@@ -1077,89 +1414,46 @@ var LibrarySyncPanel = (() => {
     }
     reloadConfig() {
       return this.action(async () => {
-        this.invalidate(); this.credentialsVerified = false;
+        this.credentialsVerified = false;
         this.fillConfig(await this.client.getConfig());
         await this.loadKeys(["glm", "deepseek", "tongji"], true);
+        if (this.preview && this.modelDirty) {
+          this.text("operation", "已重新读取配置；与预演绑定的模型可能不同，请再次保存以更新绑定或重新预演");
+        }
         this.message("已重新读取模型配置。");
       });
     }
     modelAction(phase, kind) {
+      if (kind === "models") return this.catalogAction(phase, true);
       return this.action(async () => {
         if (!this.connected || this.pathsDirty) throw new Bridge.SafeError("CONNECT", "请先连接 bridge。");
         if (!this.capabilities.includes("model-profiles-v2")) throw new Bridge.SafeError("CAPABILITY", "请更新空闲的 bridge 后重新连接，新模型参数不能发送给旧服务。");
         if (kind === "test" && !this.capabilities.includes("model-test-role-v1")) throw new Bridge.SafeError("CAPABILITY", "本地服务尚未支持区分 QC / ZH 测试；请更新空闲的 bridge 后重新连接，未发送测试请求。");
-        let model = Bridge.profile(this.readModel(phase), kind === "models");
+        let model = Bridge.profile(this.readModel(phase));
         if (model.provider === "tongji" && !this.capabilities.includes("tongji-api-v1")) throw new Bridge.SafeError("CAPABILITY", "本机服务尚不支持同济 API，请更新 bridge 后重新连接；尚未发送请求。");
-        const docsOnly = kind === "models" && Bridge.publicModelDocs(model);
-        // Official GLM documentation fetching is credential-free. Saving/testing a
-        // Coding Plan address still follows the existing endpoint confirmation.
-        if (!docsOnly) model = this.confirmEndpoint(phase, model);
-        if (!this.credentials[model.provider] && !docsOnly) throw new Bridge.SafeError("CONFIG", "请先保存所选 provider 的密钥。");
-        if (kind === "models") {
-          this.clearModelOptions(phase);
-          this.text(phase + "-model-notice", "正在获取模型列表；旧列表已作废，等待本次结果。");
-          this.text("model-result", "正在获取模型列表，尚无本次结果。");
-        }
-        let id;
-        try { id = kind === "models" ? await this.client.models(model.provider, model) : await this.client.test(model, phase); }
-        catch (e) {
-          if (kind === "models") {
-            this.text(phase + "-model-notice", "本次模型列表请求失败；旧列表已作废，请重试或手填模型 ID。");
-            this.text("model-result", "模型列表请求失败，尚无本次结果。");
-          }
-          throw e;
-        }
+        // A paid test always follows the existing endpoint confirmation.
+        model = this.confirmEndpoint(phase, model);
+        if (!this.credentials[model.provider]) throw new Bridge.SafeError("CONFIG", "请先保存所选 provider 的密钥。");
+        const id = await this.client.test(model, phase);
         if (this.closed) return;
         this.pending = { id, kind, phase, provider: model.provider, profile: JSON.stringify(model), endpoint: Bridge.endpointSignature(model) }; this.message("模型请求已提交，等待结果…");
-        this.text("model-result", `操作 ${id} · ${kind === "models" ? "读取模型列表" : "测试模型"}`);
+        this.text("model-result", `操作 ${id} · 测试模型`);
       });
     }
     renderModelResult(pending, result) {
       if (this.closed) return;
       if (pending.kind === "models") {
-        let choices;
-        try { choices = Bridge.modelChoices(result, pending.provider); }
-        catch (e) {
-          this.clearModelOptions(pending.phase);
-          this.text(pending.phase + "-model-notice", "本次模型列表响应无效；没有可用的新列表，请重试或手填。");
-          this.text("model-result", "模型列表响应无效；旧列表已作废，当前模型及参数未改动。"); throw e;
-        }
-        if (this.el(pending.phase + "-provider").value !== pending.provider) {
-          this.message("服务商已改变，丢弃旧模型列表；当前模型未改动。"); return;
-        }
-        const current = this.modelContext(pending.phase);
-        if (!pending.endpoint || pending.endpoint !== Bridge.endpointSignature(current)) {
-          this.message("API 地址或协议已改变，旧模型列表未应用。"); return;
-        }
-        if (choices.endpoint_kind && choices.endpoint_kind !== Bridge.catalogEndpointKind(current)) {
-          this.clearModelOptions(pending.phase);
-          this.message("模型列表端点类型与当前 API 地址不符，列表未应用；请重新获取或手填。", true); return;
-        }
-        if (Bridge.endpointKind(current) === "glm_coding_plan") {
-          const models = choices.models.filter(id => ["glm-5.3", "glm-5.3-flash"].includes(id));
-          choices = { ...choices, models, details: Object.fromEntries(models.filter(id => Object.hasOwn(choices.details, id)).map(id => [id, choices.details[id]])) };
-        }
-        this.modelOptions[pending.phase] = { ...choices, endpoint: Bridge.endpointSignature(current) };
-        this.pickers[pending.phase + "-model"].setOptions(choices.models.map(id => ({ value: id,
-          label: this.client.redact(choices.details[id]?.display_name ? `${choices.details[id].display_name} · API ID: ${id}` : id) })));
-        this.updateEffortOptions(pending.phase);
-        const source = { bundled_catalog: "内置官方文档候选（非实时，不是账号可用清单）",
-          official_docs: "本次联网获取的官方文档候选（不是账号可用清单）",
-          official_cache: "官方文档缓存候选（非实时，不是账号可用清单）",
-          provider_api: "本次服务商 API 返回的模型列表（不保证调用权限）" }[choices.source];
-        const note = `${source}；${choices.models.length} 项。获取时间：${choices.fetched_at || "未提供"}。` +
-          (choices.endpoint_kind ? `端点类型：${choices.endpoint_kind}。` : "") + (choices.reference ? `参考：${choices.reference}` : "");
-        this.text(pending.phase + "-model-notice", note);
-        this.text("model-result", `${pending.phase.toUpperCase()}：${note}\n${choices.notice}\n展示名 / 版本名仅供识别，请求使用 API ID。选择已知模型会在本角色草稿填写最高参数，请保存模型配置。候选列表不能代替实际测试。`);
-        this.modelResultPhase = pending.phase;
-        this.message("模型候选已载入，当前模型保持不变。"); this.update(); return;
+        // Legacy direct-call entry kept for compatibility; live listings arrive
+        // through the catalog records polled in tick().
+        this.applyRawCatalog(pending.phase, { identity: this.catalogIdentity(pending.phase), ...pending }, result);
+        return;
       }
       // Preserve only documented public test fields; never expose raw responses/credentials.
       const filtered = JSON.stringify(Bridge.testResult(result), null, 2);
       this.modelResultPhase = null;
       this.testStates[pending.phase] = { ok: result?.ok === true, at: new Date().toLocaleString(), profile: pending.profile };
       this.text(pending.phase + "-test-state", `${result?.ok === true ? "测试通过" : "测试未确认通过"} · ${this.testStates[pending.phase].at}；只代表本次请求。`);
-      this.text("model-result", `${pending.phase.toUpperCase()} ${pending.kind === "models" ? "模型列表" : "测试结果"}\n${filtered ?? "（空结果）"}`);
+      this.text("model-result", `${pending.phase.toUpperCase()} 测试结果\n${filtered ?? "（空结果）"}`);
       this.message("模型操作完成；结果仅说明本次模型请求，不代表文献同步完成。");
     }
     clearModelOptions(phase) {
@@ -1235,7 +1529,8 @@ var LibrarySyncPanel = (() => {
       for (const picker of Object.values(this.pickers)) picker.destroy();
       if (this.timer !== null) this.window.clearInterval(this.timer);
       for (const [el, event, handler] of this.handlers) el.removeEventListener(event, handler);
-      this.handlers = []; this.pending = null;
+      this.handlers = []; this.pending = null; this.catalogPending = {};
+      this.catalogTokens = { qc: (this.catalogTokens.qc || 0) + 1, zh: (this.catalogTokens.zh || 0) + 1 };
       this.el("glm-key").value = ""; this.el("deepseek-key").value = ""; this.el("tongji-key").value = ""; this.el("mineru-key").value = "";
       this.client.close(); this.host.panelClosed?.(this.window);
       // No HTTP request, no process termination. Worker ownership belongs to bridge.

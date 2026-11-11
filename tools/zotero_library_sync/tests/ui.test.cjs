@@ -116,10 +116,10 @@ test("input changes invalidate old preview; active run prevents new preview", as
 });
 test("dispatch banner expires on its status or a newer run; later form errors survive polling", async () => {
   const u = ui(); await u.controller.init();
-  const submitted = "20990204_120000_aaa001", completed = "20990204_130000_aaa002";
+  const submitted = "20261105_125719_6d2155", completed = "20261105_153207_85bfe6";
   const status = id => ({ active: false, text: "", view: { id, status: "completed", terminal: true, papers: [] } });
   u.controller.message("提交回执", false, submitted);
-  u.controller.renderStatus(status("20990204_110000_aaa003"));
+  u.controller.renderStatus(status("20261105_102028_6e3be1"));
   assert.equal(u.el("message").hidden, false);
   u.controller.renderStatus(status(completed));
   assert.equal(u.el("message").hidden, true);
@@ -373,7 +373,7 @@ test("model result keeps requested_model and numeric usage, omits nested secrets
   for (const route of ["/v1/config", "/v1/keys", "/v1/mineru", "/v1/start"]) assert.equal(u.f.posts(route).length, 0);
 });
 
-test("inline model picker mouse clicks fill only its role and invalidate preview without calling a model", async () => {
+test("inline model picker mouse clicks fill only its role and keep the preview awaiting saved models", async () => {
   const u = ui(); await u.controller.init(true);
   await u.controller.previewScope(u.controller.keys); await u.controller.tick();
   u.f.operationResult = { provider: "glm", models: ["glm-5.3-flash", "glm-5.3-flashx"], source: "bundled_catalog", notice: "文档候选，未验证账号权限" };
@@ -384,7 +384,11 @@ test("inline model picker mouse clicks fill only its role and invalidate preview
   await clickOption(u, "qc-model", "glm-5.3-flash");
   assert.equal(u.el("qc-model").value, "glm-5.3-flash");
   assert.equal(u.el("qc-model").value, "glm-5.3-flash"); assert.equal(u.el("zh-model").value, "deepseek-test-model");
-  assert.equal(u.controller.configDirty, true); assert.equal(u.controller.preview, null);
+  assert.equal(u.controller.configDirty, true); assert.equal(u.controller.modelDirty, true);
+  // The discovery scope and per-paper selections survive a model draft edit.
+  assert.ok(u.controller.preview); assert.deepEqual(u.controller.selections.map(row => row.key), ["ABCDEFG2"]);
+  assert.equal(u.el("start").disabled, true);
+  assert.match(u.el("start-reason").textContent, /存在未保存修改/);
   assert.equal(u.f.posts("/v1/config").length, 0); assert.equal(u.f.posts("/v1/test").length, 0);
   u.el("qc-model").value = "my-custom-model"; await u.el("qc-model").emit("input");
   assert.equal(u.el("qc-model").value, "my-custom-model");
@@ -452,24 +456,26 @@ test("chunk picker mouse selection invalidates preview and disabled pickers cann
 test("model results for stale providers and malformed IDs cannot replace model choices", async () => {
   const u = ui(); await u.controller.init();
   await u.controller.modelAction("qc", "models");
-  const pending = { ...u.controller.pending };
+  const record = { ...u.controller.catalogPending.qc };
   u.el("qc-provider").value = "deepseek";
-  u.controller.renderModelResult(pending, { provider: "glm", models: ["glm-one"], source: "bundled_catalog", notice: "candidate" });
+  u.controller.renderModelResult({ ...record, kind: "models" }, { provider: "glm", models: ["glm-one"], source: "bundled_catalog", notice: "candidate" });
   assert.equal(u.controller.modelOptions.qc, null);
   u.el("qc-provider").value = "glm";
-  assert.throws(() => u.controller.renderModelResult(pending, { provider: "glm", models: ["<img src=x>"], source: "bundled_catalog", notice: "bad" }));
-  assert.equal(u.controller.modelOptions.qc, null); u.controller.close();
+  u.controller.renderModelResult({ ...record, kind: "models" }, { provider: "glm", models: ["<img src=x>"], source: "bundled_catalog", notice: "bad" });
+  assert.equal(u.controller.modelOptions.qc, null);
+  assert.match(u.el("qc-model-notice").textContent, /响应无效/); u.controller.close();
 });
 test("pending model lists are bound to the exact base URL, models URL and protocol", async () => {
   for (const [field, replacement] of [["base-url", "https://other.example.com/v1"],
     ["models-url", "https://other.example.com/models"], ["protocol", "changed-protocol"]]) {
     const u = ui(); await u.controller.init();
     await u.controller.modelAction("qc", "models");
-    assert.equal(u.controller.pending.endpoint, JSON.stringify(["https://open.bigmodel.cn/api/paas/v4", "", "openai_chat_completions"]));
+    assert.deepEqual(JSON.parse(u.controller.catalogPending.qc.endpoint),
+      ["https://open.bigmodel.cn/api/paas/v4", "", "openai_chat_completions"]);
     u.el("qc-" + field).value = replacement; await u.el("qc-" + field).emit("input");
     u.f.operationResult = { provider: "glm", models: ["stale-model"], source: "bundled_catalog", notice: "old endpoint" };
     await u.controller.tick();
-    assert.equal(u.controller.pending, null); assert.equal(u.controller.modelOptions.qc, null);
+    assert.equal(u.controller.catalogPending.qc, undefined); assert.equal(u.controller.modelOptions.qc, null);
     assert.equal(u.el("qc-model-options").children.length, 0);
     assert.equal(u.el("qc-model").value, "glm-test-model");
     assert.match(u.el("message").textContent, /地址或协议已改变.*未应用/);
@@ -879,13 +885,13 @@ test("pause rechecks ownership and refuses a changed current controller", async 
 test("preview summary separates discovered, executable and deferred with visible reasons", async () => {
   const u = ui(); await u.controller.init(true);
   u.f.preview = { preview_id: RUN, text: "发现 2 篇", items: [{ key: "ABCDEFG2", citekey: "Sample2026", title: "English" }],
-    deferred: [{ key: "SYNTEST2", citekey: "Example2099SyntheticJournal-ExampleModel",
-      title: "Evaluation of a synthetic model",
-      blocked: ["IntakeBlocked: missing/unmapped publicationTitle: 'Synthetic Journal'"] }] };
+    deferred: [{ key: "9UTJAVFW", citekey: "Gallmeier2023GeoscientificModelDevelopment-EvaluationLLC4320",
+      title: "Evaluation of LLC4320",
+      blocked: ["IntakeBlocked: missing/unmapped publicationTitle: 'Geoscientific Model Development'"] }] };
   await u.controller.previewScope(u.controller.keys); await u.controller.tick();
   assert.equal(u.el("deferred-notice").hidden, false);
-  assert.match(u.el("deferred-notice").textContent, /SYNTEST2/);
-  assert.match(u.el("deferred-notice").textContent, /Synthetic Journal/);
+  assert.match(u.el("deferred-notice").textContent, /9UTJAVFW/);
+  assert.match(u.el("deferred-notice").textContent, /Geoscientific Model Development/);
   assert.match(u.el("deferred-notice").textContent, /暂缓条目/);
   assert.match(u.el("selection-notice").textContent, /发现 2 篇：可执行 1 篇、暂缓 1 篇/);
   assert.match(u.el("operation").textContent, /发现 2 篇 · 可执行 1 篇 · 暂缓 1 篇/);
@@ -927,13 +933,13 @@ test("automatic mixed preview merges blocked items into the deferred summary wit
   u.f.preview = { preview_id: RUN, text: "发现 3 篇", items: [
     { key: "ABCDEFG2", citekey: "Ready2026-Paper", title: "Ready item" },
     { key: "ABCDEFG3", citekey: "Blocked2026-EN", title: "Blocked in items", blocked: ["无法核实为本流水线上次未完成产物"] }],
-    deferred: [{ key: "SYNTEST2", citekey: "Example2099SYN-ExampleModel",
-      title: "Evaluation of a synthetic model", blocked: ["超出本批上限；保留到下次确认"] }] };
+    deferred: [{ key: "9UTJAVFW", citekey: "Gallmeier2023GMD-EvaluationLLC4320",
+      title: "Evaluation of LLC4320", blocked: ["超出本批上限；保留到下次确认"] }] };
   await u.controller.previewScope([]); await u.controller.tick();
   assert.match(u.el("operation").textContent, /发现 3 篇 · 可执行 1 篇 · 暂缓 2 篇/);
   assert.match(u.el("selection-notice").textContent, /发现 3 篇：可执行 1 篇、暂缓 2 篇/);
   const notice = u.el("deferred-notice").textContent;
-  assert.match(notice, /Example2099SYN-ExampleModel（SYNTEST2） Evaluation of a synthetic model/);
+  assert.match(notice, /Gallmeier2023GMD-EvaluationLLC4320（9UTJAVFW） Evaluation of LLC4320/);
   assert.match(notice, /Blocked2026-EN（ABCDEFG3） Blocked in items/);
   assert.equal(notice.split("\n").length, 3);  // header + two deduplicated entries
   assert.ok(!notice.includes("Ready2026"));
@@ -967,8 +973,8 @@ test("overlapping items and deferred arrays deduplicate counts and notice by key
     blocked: ["无法核实为本流水线上次未完成产物"] };
   u.f.preview = { preview_id: RUN, text: "重叠夹具", items: [
     { key: "ABCDEFG2", citekey: "Ready2026-Paper", title: "Ready item" }, blockedItem],
-    deferred: [blockedItem, { key: "SYNTEST2", citekey: "Example2099SYN-ExampleModel",
-      title: "Evaluation of a synthetic model", blocked: ["超出本批上限；保留到下次确认"] }] };
+    deferred: [blockedItem, { key: "9UTJAVFW", citekey: "Gallmeier2023GMD-EvaluationLLC4320",
+      title: "Evaluation of LLC4320", blocked: ["超出本批上限；保留到下次确认"] }] };
   await u.controller.previewScope([]); await u.controller.tick();
   assert.match(u.el("operation").textContent, /发现 3 篇 · 可执行 1 篇 · 暂缓 2 篇/);
   assert.match(u.el("selection-notice").textContent, /发现 3 篇：可执行 1 篇、暂缓 2 篇/);

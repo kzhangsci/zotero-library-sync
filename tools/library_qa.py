@@ -182,15 +182,20 @@ def _translation_checks(text: str, source: str, errors: list, warnings: list, fi
         return
     if PLACEHOLDER.search(plain) or (len(plain) < 400 and STALL.search(plain)) or re.fullmatch('[\\s*_(（\\[]*(?:TODO|TBD|N/?A|待译|译文)[\\s*)）\\].。!！]*', plain, re.I):
         _issue(errors, 'translation_placeholder', '译文含拒绝、失败、等待或占位内容。', file=file, unit=unit)
+    budget = Counter()
+    for match in re.finditer(f'(?m)^[ \\t]*(?:#{{1,6}}[ \\t]*)?(\\[\\d+\\]|【\\d+】|\\d+\\)|\\d+\\.(?!\\d))', source):
+        budget[match.group(1)] += 1
     for line in plain.splitlines():
         marker = MARKER.match(line)
         if not marker:
             continue
-        token, tail = marker.groups()
-        number = re.search('\\d+', token)[0]
-        source_marker = token in source or bool(re.search(f'<sup>\\s*{number}\\s*</sup>|\\^\\{{\\s*{number}\\s*\\}}', source))
-        if not source_marker:
+        token, _tail = marker.groups()
+        if re.match('\\s*(?:#{1,6}\\s*)?\\d+\\.\\d', line):
+            continue
+        if budget[token] <= 0:
             _issue(errors, 'translation_marker', f'译文行首出现原段没有的内部编号：{token}', file=file, unit=unit)
+        else:
+            budget[token] -= 1
     prose = DISPLAY.sub('', HTML_IMAGE.sub('', WIKI_IMAGE.sub('', IMAGE.sub('', source))))
     prose = re.sub('https?://\\S+|<[^>]+>', '', prose)
     if _norm(plain) == _norm(source) and len(re.findall('[A-Za-z]+', prose)) >= 12 and (not CJK.search(plain)):
