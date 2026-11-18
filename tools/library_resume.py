@@ -142,8 +142,9 @@ def source_record(run_id):
             scope = PUBLISH_SCOPE[record['action']]
             for name in published:
                 member = Path(name)
-                if not member.is_absolute() or member.resolve() != member.absolute() or (not member.is_relative_to(folder)):
+                if not member.is_absolute() or not member.is_relative_to(folder):
                     raise RuntimeError('处置发布路径超出文献目录或不是规范路径')
+                safe_path(s.LIBRARY, member.relative_to(s.LIBRARY).as_posix())
                 relative = member.relative_to(folder)
                 if not (scope == ('*',) and (relative.parts[0] == 'assets' or member.name in {p['citekey'] + '_' + kind + '.md' for kind in ('EN', 'MD', 'ZH')}) or (len(relative.parts) == 1 and member.name in {p['citekey'] + '_' + kind + '.md' for kind in scope})):
                     raise RuntimeError('处置发布路径超出动作范围')
@@ -151,7 +152,8 @@ def source_record(run_id):
             if candidate['qa']['ok'] is not True:
                 raise RuntimeError('单篇处置收尾前复验未通过')
             historical = state.get('qa_frozen', {})
-            if any((str(Path(name).resolve()) not in published and historical.get(name) != value for name, value in fresh.items())):
+            normalized_published = {str(Path(name).resolve()) for name in published}
+            if any((str(Path(name).resolve()) not in normalized_published and historical.get(name) != value for name, value in fresh.items())):
                 raise RuntimeError('处置范围外的原文、笔记、图片或 PDF 变化；未进入收尾')
             state.setdefault('qa_frozen', {}).update(fresh)
             p = candidate
