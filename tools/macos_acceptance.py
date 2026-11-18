@@ -16,7 +16,12 @@ import uuid
 
 
 def command(*args, **kwargs):
-    return subprocess.run(list(args), check=True, capture_output=True, **kwargs).stdout.decode().strip()
+    result=subprocess.run(list(args), capture_output=True, **kwargs)
+    if result.returncode:
+        if any(str(arg).endswith('install_macos.py') for arg in args):
+            raise RuntimeError('Synthetic installer failed:\n'+result.stderr.decode(errors='replace')[-4000:])
+        raise RuntimeError('Native acceptance command failed')
+    return result.stdout.decode().strip()
 
 
 def main():
