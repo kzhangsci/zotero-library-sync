@@ -26,9 +26,9 @@
     },
     {
       "path": "tools/macos_acceptance.py",
-      "input_sha256": "2e6878426c5fd82d1ee6576061cb135edfc7685b24d1b99baffb00fb8ded2ff1",
-      "sha256": "2e6878426c5fd82d1ee6576061cb135edfc7685b24d1b99baffb00fb8ded2ff1",
-      "bytes": 9905,
+      "input_sha256": "97c56e5e91ec91be7251560314589fd4b1dc286e0b92274abe99324ba9351c9a",
+      "sha256": "97c56e5e91ec91be7251560314589fd4b1dc286e0b92274abe99324ba9351c9a",
+      "bytes": 10956,
       "transformed": false
     },
     {
@@ -36,6 +36,13 @@
       "input_sha256": "8588c032c557728933ab3b3e05edf71f96ffdb3311e33d07068fce1a84694b78",
       "sha256": "8588c032c557728933ab3b3e05edf71f96ffdb3311e33d07068fce1a84694b78",
       "bytes": 2136,
+      "transformed": false
+    },
+    {
+      "path": ".github/workflows/beta16-sources.yml",
+      "input_sha256": "2d591c4c266d22f44775ffc8fac92140d2f07b05ad298ff9391f088b461b4399",
+      "sha256": "2d591c4c266d22f44775ffc8fac92140d2f07b05ad298ff9391f088b461b4399",
+      "bytes": 846,
       "transformed": false
     },
     {
@@ -613,6 +620,20 @@
       "transformed": false
     },
     {
+      "path": "release/collect_sources.py",
+      "input_sha256": "d0ccf8417a6ccf2438079c6944fdaa8fba0a5d4e9054c3f81c782a1cb1e5cc35",
+      "sha256": "d0ccf8417a6ccf2438079c6944fdaa8fba0a5d4e9054c3f81c782a1cb1e5cc35",
+      "bytes": 2623,
+      "transformed": false
+    },
+    {
+      "path": "release/third-party-sources.lock.json",
+      "input_sha256": "de3568d7cbe534dd0777c5da3023547b997b602a324afe409ff6d3650d6138ce",
+      "sha256": "de3568d7cbe534dd0777c5da3023547b997b602a324afe409ff6d3650d6138ce",
+      "bytes": 2954,
+      "transformed": false
+    },
+    {
       "path": "release/PRIVACY.md",
       "input_sha256": "66fc5e6db374569333020f77fd286fdedf5ee11e44a7324324801ef86dcb96dc",
       "sha256": "66fc5e6db374569333020f77fd286fdedf5ee11e44a7324324801ef86dcb96dc",
@@ -663,9 +684,9 @@
     },
     {
       "path": "release/export_rules.py",
-      "input_sha256": "76ae173e174969eb25308e50f5215e7b315c0114943049bfdc316e81f328313b",
-      "sha256": "76ae173e174969eb25308e50f5215e7b315c0114943049bfdc316e81f328313b",
-      "bytes": 11639,
+      "input_sha256": "d78933314b6c4a4eb63eebca33ae9c647a16a714113dfeb83e96e57faf2c0a16",
+      "sha256": "d78933314b6c4a4eb63eebca33ae9c647a16a714113dfeb83e96e57faf2c0a16",
+      "bytes": 11734,
       "transformed": false
     },
     {

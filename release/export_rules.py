@@ -24,12 +24,12 @@ PLUGIN_FILES = ("bootstrap.js", "bridge-client.js", "manifest.json", "panel.css"
 PLUGIN_TESTS = ("helpers.cjs", "ui.test.cjs", "ui-beta15.test.cjs", "picker.test.cjs", "protocol.test.cjs", "runtime.test.cjs", "model-parameters.test.cjs", "source-refresh.test.cjs", "model-catalog.test.cjs", "tongji.test.cjs", "model-switch.test.cjs", "zcode-plan.test.cjs")
 RELEASE_FILES = ("README.md", "DISTRIBUTION_LICENSE.md", "AGPL-3.0.txt", "MACOS.md",
                  "install_macos.py", "setup-macos.command", "fetch_macos_dependencies.py",
-                 "dependencies.macos.lock.json", "requirements-macos.lock", "PRIVACY.md", "BUILD.md", "CHANGELOG.md",
+                 "dependencies.macos.lock.json", "requirements-macos.lock", "collect_sources.py", "third-party-sources.lock.json", "PRIVACY.md", "BUILD.md", "CHANGELOG.md",
                  "setup.ps1", "install.py", "offline_smoke.py", "fetch_dependencies.py",
                  "export_rules.py", "dependencies.lock.json", "requirements.txt",
                  "DATA.gitignore", "LIBRARY.gitignore", "THIRD_PARTY_SOURCE_GUIDE.md",
                  "journal_acronyms.base.csv")
-SOURCE_ALLOWLIST = (("LICENSE", "tools/test_library_platform.py", "tools/test_macos_install.py", "tools/macos_acceptance.py", ".github/workflows/macos-beta16.yml") + tuple("tools/" + x + ".py" for x in RUNTIME_MODULES)
+SOURCE_ALLOWLIST = (("LICENSE", "tools/test_library_platform.py", "tools/test_macos_install.py", "tools/macos_acceptance.py", ".github/workflows/macos-beta16.yml", ".github/workflows/beta16-sources.yml") + tuple("tools/" + x + ".py" for x in RUNTIME_MODULES)
                    + tuple("tools/zotero_library_sync/" + x for x in PLUGIN_FILES)
                    + tuple("tools/zotero_library_sync/tests/" + x for x in PLUGIN_TESTS)
                    + ("tools/notify_library.ps1", "tools/build_zotero_plugin.py",

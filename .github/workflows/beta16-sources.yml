@@ -1,0 +1,29 @@
+name: beta16 corresponding sources
+on:
+  push:
+    branches: [beta16-validation]
+    paths:
+      - '.github/workflows/beta16-sources.yml'
+      - 'release/collect_sources.py'
+      - 'release/third-party-sources.lock.json'
+permissions:
+  contents: read
+jobs:
+  sources:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Acquire official matching sources
+        run: python -B release/collect_sources.py --bootstrap-mupdf
+      - uses: actions/upload-artifact@v4
+        with:
+          name: beta16-corresponding-sources
+          path: |
+            release/dist/*-third-party-sources.zip
+            release/dist/third-party-sources-manifest.json

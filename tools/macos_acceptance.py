@@ -29,7 +29,7 @@ def main():
     checks=[]
     with tempfile.TemporaryDirectory(prefix='library-sync-acceptance-') as temporary, contextlib.ExitStack() as cleanup:
         temp=Path(temporary).resolve()
-        config=temp/'config.json';library=temp/'Library';data=temp/'data'
+        config=temp/'config.json';library=temp/'Library 中文';data=temp/'data'
         config.write_text(json.dumps({'schema_version':1,'data_dir':str(data),'library_dir':str(library),'baseline_date':'2026-01-01'}))
         os.environ['LIBRARY_SYNC_CONFIG']=str(config)
         import library_platform as platform
@@ -43,7 +43,7 @@ def main():
         bundle=temp/'bundle'
         with zipfile.ZipFile(root/'release/dist/library-sync-0.2.0-beta.16-macos.zip') as archive:
             archive.extractall(bundle)
-        installation=temp/'installed'
+        installation=temp/'installed 应用'
         command(sys.executable,str(bundle/'app/release/install_macos.py'),'--source',str(bundle/'app'),
                 '--install-dir',str(installation),'--library-dir',str(library),'--baseline-date','2026-01-01',
                 '--git-user-name','Synthetic Acceptance','--git-user-email','fixture@example.invalid',
@@ -83,6 +83,13 @@ def main():
             except RuntimeError:pass
             else:raise AssertionError('Old Keychain record was not cleaned up')
             checks.append('native_keychain_roundtrip_and_rotation')
+            command('/usr/bin/security','lock-keychain',str(keychain))
+            try:_dpapi(second,decrypt=True)
+            except RuntimeError:pass
+            else:raise AssertionError('Locked Keychain unexpectedly readable')
+            command('/usr/bin/security','unlock-keychain','-p',password,str(keychain))
+            assert _dpapi(second,decrypt=True)==b'synthetic payload two'
+            checks.append('locked_keychain_fails_closed')
         finally:
             command('/usr/bin/security','default-keychain','-d','user','-s',old)
             command('/usr/bin/security','delete-keychain',str(keychain))
@@ -115,6 +122,16 @@ def main():
         response=session.get(f"http://127.0.0.1:{endpoint['port']}/v1/status",headers={'X-Library-Sync-Token':endpoint['token']},timeout=5)
         response.raise_for_status();checks.append('installed_native_bridge_status')
         if args.zotero:
+            stop_bridge()  # Gecko must now exercise its real nsIProcess launcher.
+            def stop_gecko_bridge():
+                import psutil
+                current=json.loads(descriptor.read_text())
+                try:
+                    process=psutil.Process(current['pid'])
+                    if str(app/'tools/library_plugin_bridge.py') in process.cmdline() and process.uids().real==os.getuid():
+                        process.terminate();process.wait(timeout=5)
+                except psutil.NoSuchProcess:pass
+            cleanup.callback(stop_gecko_bridge)
             profile=temp/'zotero-profile';extensions=profile/'extensions';extensions.mkdir(parents=True)
             zotero_data=temp/'zotero-data';zotero_data.mkdir()
             plugin=root/'release/dist/library-sync-0.2.0-beta.16.xpi'
@@ -136,8 +153,8 @@ let win=Zotero.getMainWindows()[0];let menu=[...win.document.querySelectorAll('m
 check('menu',!!menu);if(menu){menu.dispatchEvent(new win.Event('command'));await new Promise(r=>setTimeout(r,1000));
 let panel=Services.wm.getMostRecentWindow('library-sync:panel');check('panel',!!panel);check('ready',panel?.librarySyncReady===true);
 check('version',panel?.LibrarySyncBridge?.VERSION==='0.2.0-beta.16');
-const host=panel.librarySyncController.host;const client=host.createClient();const status=await client.connect(false);
-check('bridge_connection',!!status);client.close();panel?.close();}}
+const host=panel.librarySyncController.host;const client=host.createClient();const status=await client.connect(true);
+check('bridge_launch_and_connection',!!status);client.close();panel?.close();}}
 catch(e){result.failures.push('exception');result.error=String(e.message).slice(0,400);}
 finally{await IOUtils.writeJSON(OUTPUT,result);Services.startup.quit(Ci.nsIAppStartup.eForceQuit);}}
 function shutdown(){} function install(){} function uninstall(){}
