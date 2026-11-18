@@ -35,7 +35,7 @@ class Identity:
 
 def _command(pid):
     if os.name == 'nt':
-        result = subprocess.run(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', f'(Get-CimInstance Win32_Process -Filter "ProcessId={int(pid)}" -ErrorAction Stop).CommandLine'], capture_output=True, encoding='utf-8', timeout=10, creationflags=subprocess.CREATE_NO_WINDOW)
+        result = subprocess.run(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', '[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false); ' + f'(Get-CimInstance Win32_Process -Filter "ProcessId={int(pid)}" -ErrorAction Stop).CommandLine'], capture_output=True, encoding='utf-8', timeout=10, creationflags=subprocess.CREATE_NO_WINDOW)
         if result.returncode:
             raise RuntimeError('无法核验后台命令行；未重启')
         command = result.stdout.strip()

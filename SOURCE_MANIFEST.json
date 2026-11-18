@@ -19,9 +19,9 @@
     },
     {
       "path": "tools/test_library_backend.py",
-      "input_sha256": "2019551bc2fdb18706805efc7451b2606f83d6c7598f28f02cca714750293c18",
-      "sha256": "2019551bc2fdb18706805efc7451b2606f83d6c7598f28f02cca714750293c18",
-      "bytes": 2767,
+      "input_sha256": "583fc665805a14e94f7c88a6f381c6eb37afe853ebce11820a74ab7bfa8c6d80",
+      "sha256": "583fc665805a14e94f7c88a6f381c6eb37afe853ebce11820a74ab7bfa8c6d80",
+      "bytes": 3860,
       "transformed": false
     },
     {
@@ -166,9 +166,9 @@
     },
     {
       "path": "tools/library_backend.py",
-      "input_sha256": "5b743de302f53f2c1c30a69196015abfc886ee89a6aa46003c234c9cdced6f9d",
-      "sha256": "e5912954443a00dff3346f7881aeb71094f950d543aa3d194e244cda6515c5f1",
-      "bytes": 7516,
+      "input_sha256": "e32bf4182e4556d6fddde8da6958d6349efae98023e70d7beddf2799799190a8",
+      "sha256": "867df88d52f80a43f22e6e1eb1c3bb2a8c12f8a5fdc91bb603067c6b022d469c",
+      "bytes": 7588,
       "transformed": true
     },
     {

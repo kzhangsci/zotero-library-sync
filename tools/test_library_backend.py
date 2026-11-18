@@ -1,6 +1,10 @@
 """Idle upgrade gates and immutable startup identity; no model or user data."""
 import concurrent.futures
+import os
 from pathlib import Path
+import subprocess
+import sys
+import tempfile
 import unittest
 from unittest.mock import patch
 import library_backend as backend
@@ -45,3 +49,20 @@ class BackendUpgradeTests(unittest.TestCase):
         with patch.object(backend.sys,'platform','darwin'), patch('library_progress.process_identity',return_value={'exe':'/Framework/Python.app/Python'}):
             self.assertTrue(backend.image_matches({'exe':'/Framework/Python.app/Python'},'/installed/runtime/bin/python3'))
             self.assertFalse(backend.image_matches({'exe':'/unrelated/python3'},'/installed/runtime/bin/python3'))
+
+
+@unittest.skipUnless(os.name=='nt','Windows process verification')
+class NativeWindowsUpgradeTests(unittest.TestCase):
+    def test_unicode_script_identity_and_other_script_rejected(self):
+        with tempfile.TemporaryDirectory(prefix='升级 中文 ') as temporary:
+            script=Path(temporary)/'library_plugin_bridge.py'
+            script.write_text('import time;time.sleep(30)',encoding='utf-8')
+            process=subprocess.Popen([sys.executable,str(script),'--serve','--apply'],creationflags=subprocess.CREATE_NO_WINDOW)
+            try:
+                with self.assertRaisesRegex(RuntimeError,'命令行身份'):
+                    with backend.verified_process(process.pid,sys.executable,script.with_name('other.py')):pass
+                self.assertIsNone(process.poll())
+                with backend.verified_process(process.pid,sys.executable,script) as stop:stop()
+                process.wait(timeout=5)
+            finally:
+                if process.poll() is None:process.terminate();process.wait(timeout=5)
