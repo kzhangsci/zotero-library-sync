@@ -452,6 +452,13 @@
       "transformed": false
     },
     {
+      "path": "tools/test_library_qa.py",
+      "input_sha256": "9f42759529791cf33b60e00050329b3232d8954648f5943827d201846125ac7c",
+      "sha256": "9f42759529791cf33b60e00050329b3232d8954648f5943827d201846125ac7c",
+      "bytes": 21391,
+      "transformed": false
+    },
+    {
       "path": "tools/test_qc_protocol.py",
       "input_sha256": "2c30515e9c76bff826ce3cc4c0148a010e647f550fd2149118c9eac99ce79305",
       "sha256": "2c30515e9c76bff826ce3cc4c0148a010e647f550fd2149118c9eac99ce79305",
@@ -656,9 +663,9 @@
     },
     {
       "path": "release/export_rules.py",
-      "input_sha256": "8a36cf6bdeb8f7fdd1498e4e8adacff3999cdeb05ac15bf19e973ac401af89f8",
-      "sha256": "8a36cf6bdeb8f7fdd1498e4e8adacff3999cdeb05ac15bf19e973ac401af89f8",
-      "bytes": 11611,
+      "input_sha256": "76ae173e174969eb25308e50f5215e7b315c0114943049bfdc316e81f328313b",
+      "sha256": "76ae173e174969eb25308e50f5215e7b315c0114943049bfdc316e81f328313b",
+      "bytes": 11639,
       "transformed": false
     },
     {

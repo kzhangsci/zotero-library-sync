@@ -34,7 +34,7 @@ SOURCE_ALLOWLIST = (("LICENSE", "tools/test_library_platform.py", "tools/test_ma
                    + tuple("tools/zotero_library_sync/tests/" + x for x in PLUGIN_TESTS)
                    + ("tools/notify_library.ps1", "tools/build_zotero_plugin.py",
                       "tools/build_library_release.py", "tools/test_library_release.py",
-                      "tools/test_library_progress.py", "tools/test_qc_protocol.py", "tools/test_model_pipeline.py",
+                      "tools/test_library_progress.py", "tools/test_library_qa.py", "tools/test_qc_protocol.py", "tools/test_model_pipeline.py",
                       "tools/test_library_source.py", "tools/test_model_catalog.py", "tools/test_model_api.py", "tools/test_model_profiles.py",
                       "tools/test_library_issues.py", "tools/test_library_remedy.py",
                       "tools/test_library_control_beta15.py", "tools/test_plugin_bridge_beta15.py")
