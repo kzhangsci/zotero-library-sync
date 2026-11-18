@@ -166,7 +166,7 @@ _windows_locks = {}
 def acquire(folder: Path, step: str, worker: str) -> bool:
     folder.mkdir(parents=True, exist_ok=True)
     p = lock_path(folder, step)
-    if os.name == 'nt':
+    if os.name == 'nt' or sys.platform == 'darwin':
         from library_sync import guarded_file, release_legacy_paper_lock
         for attempt in range(2):
             handle = guarded_file(p, writable=True, create=True, delete_on_close=True)
@@ -177,7 +177,11 @@ def acquire(folder: Path, step: str, worker: str) -> bool:
                     continue
                 return False
             try:
-                stream.write(f"{worker} {dt.datetime.now().isoformat(timespec='seconds')}".encode())
+                payload = f"{worker} {dt.datetime.now().isoformat(timespec='seconds')}".encode()
+                if sys.platform == 'darwin':
+                    from library_progress import process_identity
+                    payload = json.dumps({'schema': 1, 'kind': 'library-sync-step-lock', 'worker': worker, 'owner': process_identity(os.getpid())}).encode('utf-8')
+                stream.write(payload)
                 stream.flush()
                 _windows_locks[p] = (worker, handle)
             except BaseException:
@@ -205,7 +209,7 @@ def acquire(folder: Path, step: str, worker: str) -> bool:
 
 def release(folder: Path, step: str, worker: str) -> None:
     p = lock_path(folder, step)
-    if os.name == 'nt':
+    if os.name == 'nt' or sys.platform == 'darwin':
         entry = _windows_locks.get(p)
         if entry and entry[0] == worker:
             del _windows_locks[p]
@@ -512,7 +516,7 @@ QA_SOURCE_BUDGET = re.compile('(?m)^[ \\t]*(?:#{1,6}[ \\t]*)?(\\[\\d+\\]|【\\d+
 
 def lock_owned(folder: Path, step: str, worker: str) -> bool:
     p = lock_path(folder, step)
-    if os.name == 'nt':
+    if os.name == 'nt' or sys.platform == 'darwin':
         entry = _windows_locks.get(p)
         return bool(entry and entry[0] == worker)
     try:

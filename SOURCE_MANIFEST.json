@@ -26,9 +26,9 @@
     },
     {
       "path": "tools/macos_acceptance.py",
-      "input_sha256": "8abcf314d9e61c48e4125d83278edb1476f1533844369154b50118a446b3bc4d",
-      "sha256": "8abcf314d9e61c48e4125d83278edb1476f1533844369154b50118a446b3bc4d",
-      "bytes": 12652,
+      "input_sha256": "8f737efd8c2918b828a32c77e805d5e063d4415862ddfb98ce992cde1d18827f",
+      "sha256": "8f737efd8c2918b828a32c77e805d5e063d4415862ddfb98ce992cde1d18827f",
+      "bytes": 13882,
       "transformed": false
     },
     {
@@ -152,9 +152,9 @@
     },
     {
       "path": "tools/library_platform.py",
-      "input_sha256": "269f70c6d79491c42957ccd172b007d42b6cffa940ade0694f33fae161e641a1",
-      "sha256": "3b2ee55c4959b072321516a4fac5617926a6f6f08acc571c8085b3036c67225f",
-      "bytes": 10589,
+      "input_sha256": "69a5fba6a1d2e6f16c4aee675e4cc2f26bc33877154d989e55a5914f69c72d41",
+      "sha256": "282f399f07aa702929920133e3c1ee6c2148d6ddff3a26b91d14aaaf9a9365ce",
+      "bytes": 11762,
       "transformed": true
     },
     {
@@ -201,9 +201,9 @@
     },
     {
       "path": "tools/library_sync.py",
-      "input_sha256": "9aecb08df96d537f53d8bdad3a218376503827f9f4acbdcb1b664e86e38aa3e6",
-      "sha256": "e4021c6599582fbb913f29a19fe2527b0c7971bb2fd620e3b347c57c67c78da5",
-      "bytes": 71884,
+      "input_sha256": "4aa70cdaf03cf450934a047f2a5464bab667185392afe26e8178e0e28c61fcf5",
+      "sha256": "56ab5b351286ea1ce42bdd385b007a3b281c7db6d5ca03344e08604e32fec08c",
+      "bytes": 72049,
       "transformed": true
     },
     {
@@ -264,9 +264,9 @@
     },
     {
       "path": "tools/sync.py",
-      "input_sha256": "26655852208bfbcaa812b392040d8b9987c73efd273731d0da8cb5f993fadad1",
-      "sha256": "258eba34096a6e4c3a7f7950ec75205992e67f12ae5039c345642bec73c08ce3",
-      "bytes": 69800,
+      "input_sha256": "248ac91082e3151e7098b6731a90da19b89f10b13626c88846699e75e6db81a4",
+      "sha256": "4ae26d24cadba54624578e223c7fee48a0a40318674aff6b9418da0b9c801fa6",
+      "bytes": 70193,
       "transformed": true
     },
     {
@@ -607,9 +607,9 @@
     },
     {
       "path": "release/install_macos.py",
-      "input_sha256": "72defd4954aa3aff03ab5647c4cb2a7c53c66657241eab71b27c1234f6863a14",
-      "sha256": "72defd4954aa3aff03ab5647c4cb2a7c53c66657241eab71b27c1234f6863a14",
-      "bytes": 3136,
+      "input_sha256": "209ad1e8a673e019ff16536efb8c4b0a64c16752160d9672611b96e73b79656c",
+      "sha256": "209ad1e8a673e019ff16536efb8c4b0a64c16752160d9672611b96e73b79656c",
+      "bytes": 3351,
       "transformed": false
     },
     {

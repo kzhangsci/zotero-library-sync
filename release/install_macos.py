@@ -5,6 +5,7 @@ import platform
 from pathlib import Path
 import subprocess
 import sys
+import sysconfig
 import venv
 
 from install import install, verify
@@ -15,6 +16,8 @@ def prerequisites():
         raise RuntimeError("This installer requires macOS")
     if sys.version_info[:2] != (3, 13):
         raise RuntimeError("Install CPython 3.13 from python.org, then run setup again")
+    if platform.python_implementation() != "CPython" or sysconfig.get_config_var("Py_GIL_DISABLED"):
+        raise RuntimeError("Use standard GIL-enabled CPython 3.13 for the pinned binary wheels")
     if tuple(int(v) for v in platform.mac_ver()[0].split(".")[:1]) < (13,):
         raise RuntimeError("macOS 13 or later is required")
     if platform.machine() not in ("arm64", "x86_64"):

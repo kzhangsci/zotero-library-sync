@@ -72,6 +72,24 @@ def main():
             worker.terminate();worker.wait(timeout=5)
         assert not progress.owner_matches(child);checks.append('exited_process_rejected')
         checks.append('native_worker_detection')
+        import sync
+        step_folder=temp/'step-lock'
+        assert sync.acquire(step_folder,'qc','synthetic-step')
+        assert sync.lock_owned(step_folder,'qc','synthetic-step')
+        assert not sync.acquire(step_folder,'qc','another-worker')
+        sync.release(step_folder,'qc','another-worker')
+        assert sync.lock_owned(step_folder,'qc','synthetic-step')
+        sync.release(step_folder,'qc','synthetic-step')
+        checks.append('native_step_lock_exclusion')
+        crash_folder=temp/'crashed-step'
+        code='import sys,time;sys.path.insert(0,'+repr(str(root/'tools'))+');from pathlib import Path;import sync;assert sync.acquire(Path('+repr(str(crash_folder))+'),"qc","synthetic-crash");print("READY",flush=True);time.sleep(60)'
+        crash_worker=subprocess.Popen([sys.executable,'-c',code],stdout=subprocess.PIPE)
+        try:assert crash_worker.stdout.readline().strip()==b'READY'
+        finally:crash_worker.terminate();crash_worker.wait(timeout=5)
+        assert sync.acquire(crash_folder,'qc','synthetic-recovery')
+        sync.release(crash_folder,'qc','synthetic-recovery')
+        assert not (crash_folder/'.sync_qc.lock').exists()
+        checks.append('native_step_lock_crash_recovery')
         private=temp/'.secrets/plugin_bridge.json'
         write_private_manifest(private,{'token':'synthetic-test-only'})
         assert private.stat().st_mode & 0o777==0o600 and private.parent.stat().st_mode & 0o777==0o700

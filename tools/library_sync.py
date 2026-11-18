@@ -243,6 +243,9 @@ def active_workers():
     return data if isinstance(data, list) else [data]
 
 def release_legacy_paper_lock(path, *, own_pid=None):
+    if sys.platform == 'darwin':
+        from library_platform import reclaim_mac_step_lock
+        return reclaim_mac_step_lock(path)
     import ctypes
     import msvcrt
     from ctypes import wintypes
@@ -276,7 +279,7 @@ def release_legacy_paper_lock(path, *, own_pid=None):
 def assert_idle():
     processes = active_workers()
     locks = list((LIBRARY / 'papers').glob('*/.sync_*.lock'))
-    if not processes and os.name == 'nt':
+    if not processes and (os.name == 'nt' or sys.platform == 'darwin'):
         locks = [path for path in locks if not release_legacy_paper_lock(path)]
     if processes or locks:
         names = '，'.join((path.parent.name + '/' + path.name for path in locks[:3]))

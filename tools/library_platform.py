@@ -71,7 +71,7 @@ def posix_lock(path):
 def posix_guard(path, *, writable=False, create=False, delete_on_close=False):
     import fcntl
     path = Path(path)
-    flags = (os.O_RDWR if writable else os.O_RDONLY) | (os.O_CREAT | os.O_EXCL if create else 0)
+    flags = (os.O_RDWR if writable else os.O_RDONLY) | (os.O_CREAT | os.O_EXCL if create else 0) | getattr(os, 'O_NOFOLLOW', 0)
     fd = os.open(path, flags, 384)
     with os.fdopen(fd, 'r+b' if writable else 'rb') as stream:
         fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -83,6 +83,34 @@ def posix_guard(path, *, writable=False, create=False, delete_on_close=False):
                 current = path.stat()
                 if (current.st_dev, current.st_ino) == (identity.st_dev, identity.st_ino):
                     path.unlink()
+
+def reclaim_mac_step_lock(path):
+    import library_progress as progress
+    path = Path(path)
+    if path.name not in {'.sync_md.lock', '.sync_qc.lock', '.sync_zh.lock'} or path.resolve() != path.absolute():
+        return False
+    try:
+        with posix_guard(path) as stream:
+            identity = os.fstat(stream.fileno())
+            if identity.st_uid != os.getuid() or identity.st_size > 2048:
+                return False
+            try:
+                record = json.loads(stream.read(2049))
+            except (ValueError, UnicodeError):
+                return False
+            if not isinstance(record, dict) or record.get('schema') != 1 or record.get('kind') != 'library-sync-step-lock':
+                return False
+            if progress.owner_matches(record.get('owner')):
+                return False
+            current = path.lstat()
+            if (identity.st_dev, identity.st_ino) != (current.st_dev, current.st_ino):
+                return False
+            path.unlink()
+            return True
+    except FileNotFoundError:
+        return True
+    except (OSError, progress.ProgressError):
+        return False
 
 def keychain_protect(data, *, decrypt=False, backend=None):
     backend = backend or NativeKeychain()
