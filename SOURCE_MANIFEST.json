@@ -411,9 +411,9 @@
     },
     {
       "path": "tools/zotero_library_sync/tests/runtime.test.cjs",
-      "input_sha256": "46290183ba7507c406d336f6a160d9366797b54ab3dfb00eba2a88c1eb546b2f",
-      "sha256": "46290183ba7507c406d336f6a160d9366797b54ab3dfb00eba2a88c1eb546b2f",
-      "bytes": 22611,
+      "input_sha256": "94f5c2cbb8e08025698bd0e4818ee716bf4f0dace1de645eb1c70a592db7a2ca",
+      "sha256": "94f5c2cbb8e08025698bd0e4818ee716bf4f0dace1de645eb1c70a592db7a2ca",
+      "bytes": 23470,
       "transformed": false
     },
     {

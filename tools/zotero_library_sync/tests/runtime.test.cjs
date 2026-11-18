@@ -70,6 +70,23 @@ function runtime() {
   vm.runInContext(fs.readFileSync(path.join(ROOT, "bootstrap.js"), "utf8"), context);
   return { context, counters, win, docs };
 }
+test('restart helper uses an exact PID argument and awaits native process completion', async () => {
+  const r=runtime();await r.context.startup({rootURI:'chrome://test/'});
+  r.counters.observerExit=0;
+  await r.context.LibrarySync.restartBackend(123);
+  assert.deepEqual(Array.from(r.counters.launches[0].args),[PATHS.repo+'\\tools\\library_plugin_bridge.py','--restart-idle','123','--apply']);
+  assert.equal(r.counters.launches[0].path,PATHS.pythonw);
+  assert.throws(()=>r.context.LibrarySync.restartBackend('123;kill'),/PID/);
+  r.context.shutdown();
+});
+
+test('failed native restart helper never reports upgrade success', async () => {
+  const r=runtime();await r.context.startup({rootURI:'chrome://test/'});
+  r.counters.observerExit=2;
+  await assert.rejects(r.context.LibrarySync.restartBackend(123),/后台未重启/);
+  r.context.shutdown();
+});
+
 test("bootstrap waits for initialization/UI and shutdown cancels deferred startup", async () => {
   const r = runtime(); let ready;
   r.context.Zotero.uiReadyPromise = new Promise(resolve => { ready = resolve; });
