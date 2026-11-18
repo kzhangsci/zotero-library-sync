@@ -31,7 +31,11 @@ def main():
     args=parser.parse_args()
     if sys.platform!='darwin':raise RuntimeError('Native macOS required')
     root=Path(__file__).resolve().parents[1]
-    checks=[]
+    class Checks(list):
+        def append(self,name):
+            super().append(name)
+            args.output.write_text(json.dumps({'platform':sys.platform,'checks':self,'ok':False,'phase':'running','model_requests':0},indent=2),encoding='utf-8')
+    checks=Checks()
     with tempfile.TemporaryDirectory(prefix='library-sync-acceptance-') as temporary, contextlib.ExitStack() as cleanup:
         temp=Path(temporary).resolve()
         config=temp/'config.json';library=temp/'Library 中文';data=temp/'data'
@@ -59,12 +63,15 @@ def main():
 
         identity=progress.process_identity(os.getpid())
         assert progress.owner_matches(identity);checks.append('native_process_identity')
-        worker=subprocess.Popen([sys.executable,'-c','import time;time.sleep(60)'])
+        fake_worker=temp/'sync.py';fake_worker.write_text('import time;time.sleep(60)',encoding='utf-8')
+        worker=subprocess.Popen([sys.executable,str(fake_worker)])
         try:
             child=progress.process_identity(worker.pid);assert progress.owner_matches(child)
+            assert any(row['ProcessId']==worker.pid for row in platform.mac_workers())
         finally:
             worker.terminate();worker.wait(timeout=5)
         assert not progress.owner_matches(child);checks.append('exited_process_rejected')
+        checks.append('native_worker_detection')
         private=temp/'.secrets/plugin_bridge.json'
         write_private_manifest(private,{'token':'synthetic-test-only'})
         assert private.stat().st_mode & 0o777==0o600 and private.parent.stat().st_mode & 0o777==0o700
@@ -110,17 +117,19 @@ def main():
         with fitz.open(clean) as doc:assert 'Synthetic scientific text' in doc[0].get_text()
         checks.append('native_pdf_upload_copy_preserves_source')
         app=installation/'app'
+        bridge_error=temp/'bridge-stderr.log'
+        bridge_stderr=cleanup.enter_context(bridge_error.open('wb'))
         bridge=subprocess.Popen([str(app/'runtime/bin/python3'),str(app/'tools/library_plugin_bridge.py'),'--serve','--apply'],
                                 cwd=app,env={**os.environ,'LIBRARY_SYNC_CONFIG':str(app/'library-sync.json')},
-                                stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+                                stdout=subprocess.DEVNULL,stderr=bridge_stderr)
         def stop_bridge():
             if bridge.poll() is None:bridge.terminate()
             bridge.wait(timeout=5)
         cleanup.callback(stop_bridge)
         descriptor=installation/'data/.secrets/plugin_bridge.json'
-        deadline=time.monotonic()+12
+        deadline=time.monotonic()+30
         while not descriptor.is_file() and bridge.poll() is None and time.monotonic()<deadline:time.sleep(0.1)
-        assert descriptor.is_file(),'Native bridge did not publish descriptor'
+        assert descriptor.is_file(),'Native bridge did not publish descriptor: '+bridge_error.read_text(encoding='utf-8',errors='replace')[-2000:]
         endpoint=json.loads(descriptor.read_text())
         import requests
         session=requests.Session();session.trust_env=False

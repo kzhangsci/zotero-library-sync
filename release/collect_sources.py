@@ -13,7 +13,7 @@ def main():
     p.add_argument('--bootstrap-mupdf',action='store_true')
     args=p.parse_args()
     root=Path(__file__).resolve().parents[1]
-    lock=json.loads((root/'release/third-party-sources.lock.json').read_text())
+    lock=json.loads((root/'release/third-party-sources.lock.json').read_text(encoding='utf-8'))
     target=root/'release/vendor/sources';target.mkdir(parents=True,exist_ok=True)
     manifest=[]
     for row in lock['sources']:
@@ -35,9 +35,9 @@ def main():
         manifest.append({**row,'sha256':digest,'bytes':file.stat().st_size})
         print('VERIFIED_SOURCE',row['name'],row['version'],flush=True)
     out=root/'release/dist';out.mkdir(parents=True,exist_ok=True)
-    version=json.loads((root/'tools/zotero_library_sync/manifest.json').read_text())['version']
+    version=json.loads((root/'tools/zotero_library_sync/manifest.json').read_text(encoding='utf-8'))['version']
     record={'schema':1,'version':version,'bootstrap':args.bootstrap_mupdf,'sources':manifest}
-    (out/'third-party-sources-manifest.json').write_text(json.dumps(record,indent=2)+'\n')
+    (out/'third-party-sources-manifest.json').write_text(json.dumps(record,indent=2)+'\n',encoding='utf-8')
     with zipfile.ZipFile(out/f'library-sync-{version}-third-party-sources.zip','w',compression=zipfile.ZIP_STORED) as z:
         for row in manifest:z.write(target/row['filename'],'sources/'+row['filename'])
         z.writestr('SOURCES.json',json.dumps(record,indent=2))

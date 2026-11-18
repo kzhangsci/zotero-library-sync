@@ -39,6 +39,8 @@ def mac_workers(*, api=None):
     result = []
     for process in api.process_iter():
         try:
+            if not process.name().lower().startswith('python'):
+                continue
             if process.uids().real != os.getuid():
                 continue
             args = process.cmdline()
@@ -120,14 +122,14 @@ class NativeKeychain:
         account = account.encode('ascii')
         status = self.security.SecKeychainAddGenericPassword(None, len(KEYCHAIN_SERVICE), KEYCHAIN_SERVICE, len(account), account, len(data), data, None)
         if status:
-            raise RuntimeError('Keychain 保存失败或访问未获授权；未使用明文保存')
+            raise RuntimeError(f'Keychain 保存失败（OSStatus {status}）；未使用明文保存')
 
     def get(self, account):
         account = account.encode('ascii')
         length, content, item = (ctypes.c_uint32(), ctypes.c_void_p(), ctypes.c_void_p())
         status = self.security.SecKeychainFindGenericPassword(None, len(KEYCHAIN_SERVICE), KEYCHAIN_SERVICE, len(account), account, ctypes.byref(length), ctypes.byref(content), ctypes.byref(item))
         if status:
-            raise RuntimeError('Keychain 读取失败或访问未获授权；请检查本机授权')
+            raise RuntimeError(f'Keychain 读取失败（OSStatus {status}）；请检查本机授权')
         try:
             if length.value > 1024 * 1024:
                 raise ValueError('Credential payload too large')

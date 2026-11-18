@@ -33,6 +33,7 @@ MANUAL_UPDATE_URL = "https://library-sync.invalid/updates.json"
 ALLOWLIST = (
     "bootstrap.js", "bridge-client.js", "manifest.json", "panel.css",
     "panel.js", "panel.xhtml", "picker.js", "prefs.js", "runtime.js",
+    "LICENSE", "DISTRIBUTION_LICENSE.md", "AGPL-3.0.txt",
 )
 STAMP = (2020, 1, 1, 0, 0, 0)
 

@@ -26,9 +26,9 @@
     },
     {
       "path": "tools/macos_acceptance.py",
-      "input_sha256": "1058a6b202d925a1f01f99de9834bfe4758598498ab2c614eb8be8bc44a9e6ac",
-      "sha256": "1058a6b202d925a1f01f99de9834bfe4758598498ab2c614eb8be8bc44a9e6ac",
-      "bytes": 11233,
+      "input_sha256": "c3cc920eb9e75d60d0b5f890050a09bfc11be5edb3a034138ec49fbb8cbba3e8",
+      "sha256": "c3cc920eb9e75d60d0b5f890050a09bfc11be5edb3a034138ec49fbb8cbba3e8",
+      "bytes": 11891,
       "transformed": false
     },
     {
@@ -152,9 +152,9 @@
     },
     {
       "path": "tools/library_platform.py",
-      "input_sha256": "2ffc0f4ca52c70f7d9ef1ecdc245536384ccf5c0d6e6ec22d8400fc689494926",
-      "sha256": "18596962e896d3e2aaea2d1561300e90896d1d6e346c39d9c3668a20d6201563",
-      "bytes": 10494,
+      "input_sha256": "269f70c6d79491c42957ccd172b007d42b6cffa940ade0694f33fae161e641a1",
+      "sha256": "3b2ee55c4959b072321516a4fac5617926a6f6f08acc571c8085b3036c67225f",
+      "bytes": 10589,
       "transformed": true
     },
     {
@@ -340,6 +340,27 @@
       "transformed": false
     },
     {
+      "path": "tools/zotero_library_sync/LICENSE",
+      "input_sha256": "139a2dd3416c674a312f8d2a66e38a745cb15a47c3524511c63f80dadc01d7a1",
+      "sha256": "139a2dd3416c674a312f8d2a66e38a745cb15a47c3524511c63f80dadc01d7a1",
+      "bytes": 1082,
+      "transformed": false
+    },
+    {
+      "path": "tools/zotero_library_sync/DISTRIBUTION_LICENSE.md",
+      "input_sha256": "8b8330caef167f5f2bc7d482ed422ad3497a5a2bdcd7fd8e8d3e15736a7cf22b",
+      "sha256": "8b8330caef167f5f2bc7d482ed422ad3497a5a2bdcd7fd8e8d3e15736a7cf22b",
+      "bytes": 1346,
+      "transformed": false
+    },
+    {
+      "path": "tools/zotero_library_sync/AGPL-3.0.txt",
+      "input_sha256": "d8a6cc31abc16b6748c7a21f21611f5a1ec33f67d22ca23d7da1c19b95496bee",
+      "sha256": "d8a6cc31abc16b6748c7a21f21611f5a1ec33f67d22ca23d7da1c19b95496bee",
+      "bytes": 34020,
+      "transformed": false
+    },
+    {
       "path": "tools/zotero_library_sync/tests/helpers.cjs",
       "input_sha256": "509cf1789a42b0bfe45c96d9d9fe9f29e077c2a4765bf8a1c2106fe8f584544f",
       "sha256": "509cf1789a42b0bfe45c96d9d9fe9f29e077c2a4765bf8a1c2106fe8f584544f",
@@ -432,16 +453,16 @@
     },
     {
       "path": "tools/build_zotero_plugin.py",
-      "input_sha256": "d5c475b6835397d63f3f8d790985cdaa35f6d1d0145d96e099326e57ba65cc6f",
-      "sha256": "d5c475b6835397d63f3f8d790985cdaa35f6d1d0145d96e099326e57ba65cc6f",
-      "bytes": 7309,
+      "input_sha256": "0c5cb6ba3c7f768aa5da515bffc04c5cb9a745175914b707ce309986999f9832",
+      "sha256": "0c5cb6ba3c7f768aa5da515bffc04c5cb9a745175914b707ce309986999f9832",
+      "bytes": 7367,
       "transformed": false
     },
     {
       "path": "tools/build_library_release.py",
-      "input_sha256": "73fe933f94f87abc599f362ac41db98ad0a2580c14014a87d5d6678f4f29f920",
-      "sha256": "73fe933f94f87abc599f362ac41db98ad0a2580c14014a87d5d6678f4f29f920",
-      "bytes": 10371,
+      "input_sha256": "ff13560d64c745d96bfe5c1b5d9e5b3acdc1415433018be10d659788d437adf3",
+      "sha256": "ff13560d64c745d96bfe5c1b5d9e5b3acdc1415433018be10d659788d437adf3",
+      "bytes": 11472,
       "transformed": false
     },
     {
@@ -621,9 +642,9 @@
     },
     {
       "path": "release/collect_sources.py",
-      "input_sha256": "d0ccf8417a6ccf2438079c6944fdaa8fba0a5d4e9054c3f81c782a1cb1e5cc35",
-      "sha256": "d0ccf8417a6ccf2438079c6944fdaa8fba0a5d4e9054c3f81c782a1cb1e5cc35",
-      "bytes": 2623,
+      "input_sha256": "ebd11c6e3eb4b2b26b95d7415a1d3efa0be3909fdd309f9d578ebb36224c1495",
+      "sha256": "ebd11c6e3eb4b2b26b95d7415a1d3efa0be3909fdd309f9d578ebb36224c1495",
+      "bytes": 2672,
       "transformed": false
     },
     {
@@ -684,9 +705,9 @@
     },
     {
       "path": "release/export_rules.py",
-      "input_sha256": "d78933314b6c4a4eb63eebca33ae9c647a16a714113dfeb83e96e57faf2c0a16",
-      "sha256": "d78933314b6c4a4eb63eebca33ae9c647a16a714113dfeb83e96e57faf2c0a16",
-      "bytes": 11734,
+      "input_sha256": "748b2d65e51a3111fec752bc43ae0d420f70fd3da2216dbc66784a2856a72ba8",
+      "sha256": "748b2d65e51a3111fec752bc43ae0d420f70fd3da2216dbc66784a2856a72ba8",
+      "bytes": 11788,
       "transformed": false
     },
     {

@@ -20,7 +20,7 @@ RUNTIME_MODULES = (
     "mineru_credentials", "model_api", "model_catalog", "qc_glm", "report_retention", "sync", "zotero_local",
 )
 PLUGIN_FILES = ("bootstrap.js", "bridge-client.js", "manifest.json", "panel.css", "panel.js",
-                "panel.xhtml", "picker.js", "prefs.js", "runtime.js")
+                "panel.xhtml", "picker.js", "prefs.js", "runtime.js", "LICENSE", "DISTRIBUTION_LICENSE.md", "AGPL-3.0.txt")
 PLUGIN_TESTS = ("helpers.cjs", "ui.test.cjs", "ui-beta15.test.cjs", "picker.test.cjs", "protocol.test.cjs", "runtime.test.cjs", "model-parameters.test.cjs", "source-refresh.test.cjs", "model-catalog.test.cjs", "tongji.test.cjs", "model-switch.test.cjs", "zcode-plan.test.cjs")
 RELEASE_FILES = ("README.md", "DISTRIBUTION_LICENSE.md", "AGPL-3.0.txt", "MACOS.md",
                  "install_macos.py", "setup-macos.command", "fetch_macos_dependencies.py",

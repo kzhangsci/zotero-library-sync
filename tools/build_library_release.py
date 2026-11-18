@@ -109,7 +109,7 @@ def runtime_files(repo, vendor):
     return result
 
 
-def build(repo=REPO, vendor=None, *, source_only=False, macos=False):
+def build(repo=REPO, vendor=None, *, source_only=False, macos=False, include_sources=False):
     repo = Path(repo).resolve()
     files = export_sources(repo)
     # The NOT_PUBLISHED tripwire describes local review artifacts; published
@@ -128,6 +128,7 @@ def build(repo=REPO, vendor=None, *, source_only=False, macos=False):
         bundle["README.md"] = published["README.md"].replace(b"](release/", b"](app/release/")
         bundle["LICENSE"] = published["LICENSE"]
         bundle["DISTRIBUTION_LICENSE.md"] = published["release/DISTRIBUTION_LICENSE.md"]
+        bundle["AGPL-3.0.txt"] = published["release/AGPL-3.0.txt"]
         bundle["bundle.sha256"] = "".join(f"{digest(value)}  {name}\n" for name, value in sorted(bundle.items())).encode()
         outputs[f"library-sync-{VERSION}-windows-x64.zip"] = zip_bytes(bundle)
     if macos:
@@ -158,8 +159,21 @@ def build(repo=REPO, vendor=None, *, source_only=False, macos=False):
         bundle["README.md"] = published["release/MACOS.md"]
         bundle["LICENSE"] = published["LICENSE"]
         bundle["DISTRIBUTION_LICENSE.md"] = published["release/DISTRIBUTION_LICENSE.md"]
+        bundle["AGPL-3.0.txt"] = published["release/AGPL-3.0.txt"]
         bundle["bundle.sha256"] = "".join(f"{digest(value)}  {name}\n" for name,value in sorted(bundle.items())).encode()
         outputs[f"library-sync-{VERSION}-macos.zip"] = zip_bytes(bundle)
+    if include_sources:
+        name = f"library-sync-{VERSION}-third-party-sources.zip"
+        file = repo / "release/dist" / name
+        lock = json.loads((repo / "release/third-party-sources.lock.json").read_text(encoding="utf-8"))
+        with zipfile.ZipFile(file) as archive:
+            manifest = json.loads(archive.read("SOURCES.json"))
+            if manifest.get("bootstrap") or manifest.get("version") != VERSION:
+                raise ValueError("Corresponding sources are not finalized")
+            for row in lock["sources"]:
+                if not row.get("sha256") or digest(archive.read("sources/" + row["filename"])) != row["sha256"]:
+                    raise ValueError("Corresponding source checksum mismatch")
+        outputs[name] = file.read_bytes()
     outputs["SHA256SUMS.txt"] = "".join(f"{digest(value)}  {name}\n" for name, value in sorted(outputs.items())).encode()
     return outputs
 
@@ -171,11 +185,12 @@ def main(argv=None):
     mode.add_argument("--dry-run", action="store_true")
     ap.add_argument("--limit", type=int, choices=(0, 1), default=1)
     ap.add_argument("--source-only", action="store_true")
+    ap.add_argument("--include-sources", action="store_true", help="Include and verify complete corresponding sources archive")
     ap.add_argument("--macos", action="store_true", help="Also build macOS offline wheels/bootstrap package")
     ap.add_argument("--vendor", type=Path, default=REPO / "release/vendor")
     ap.add_argument("--output", type=Path, default=REPO / "release/dist")
     args = ap.parse_args(argv)
-    outputs = build(vendor=args.vendor, source_only=args.source_only, macos=args.macos)
+    outputs = build(vendor=args.vendor, source_only=args.source_only, macos=args.macos, include_sources=args.include_sources)
     if args.apply:
         target = args.output.absolute()
         if target.resolve() != target or target == Path(target.anchor):
