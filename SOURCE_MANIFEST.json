@@ -19,9 +19,9 @@
     },
     {
       "path": "tools/test_library_backend.py",
-      "input_sha256": "fc887e23bfc1985174f99b4c4d9517495644e2e7dea8970a401e9b548866666c",
-      "sha256": "fc887e23bfc1985174f99b4c4d9517495644e2e7dea8970a401e9b548866666c",
-      "bytes": 2286,
+      "input_sha256": "2019551bc2fdb18706805efc7451b2606f83d6c7598f28f02cca714750293c18",
+      "sha256": "2019551bc2fdb18706805efc7451b2606f83d6c7598f28f02cca714750293c18",
+      "bytes": 2767,
       "transformed": false
     },
     {
@@ -166,9 +166,9 @@
     },
     {
       "path": "tools/library_backend.py",
-      "input_sha256": "34ea34622fab4ab0451158ea3a9d70d4c0f6377d14d536beab1329c32bbc629f",
-      "sha256": "f4b7f12ff67c3b6d6bf8b6b42f5a8644c2a35048c2c58b46cb1afbfb0295f52f",
-      "bytes": 7188,
+      "input_sha256": "5b743de302f53f2c1c30a69196015abfc886ee89a6aa46003c234c9cdced6f9d",
+      "sha256": "e5912954443a00dff3346f7881aeb71094f950d543aa3d194e244cda6515c5f1",
+      "bytes": 7516,
       "transformed": true
     },
     {
@@ -348,9 +348,9 @@
     },
     {
       "path": "tools/zotero_library_sync/runtime.js",
-      "input_sha256": "813cf166fd00707fd32eca5d67a83a786dce5800c5d9a07d03f507224e13c24a",
-      "sha256": "813cf166fd00707fd32eca5d67a83a786dce5800c5d9a07d03f507224e13c24a",
-      "bytes": 20812,
+      "input_sha256": "fb0fa8dc5b6f7b0de1352603559b9193b8b3a58511de37b1334747557ff52e4a",
+      "sha256": "fb0fa8dc5b6f7b0de1352603559b9193b8b3a58511de37b1334747557ff52e4a",
+      "bytes": 20851,
       "transformed": false
     },
     {
@@ -593,9 +593,9 @@
     },
     {
       "path": "release/README.md",
-      "input_sha256": "c193da7f9eeaab693ff3dc60610a15482ddf2b395fa1f065ffe0c79dffe5c4da",
-      "sha256": "c193da7f9eeaab693ff3dc60610a15482ddf2b395fa1f065ffe0c79dffe5c4da",
-      "bytes": 14242,
+      "input_sha256": "6f3cd8a51793d15e02ff0a7628d3b56b398b52d8eda2a4552dffcd7436a5f902",
+      "sha256": "6f3cd8a51793d15e02ff0a7628d3b56b398b52d8eda2a4552dffcd7436a5f902",
+      "bytes": 14737,
       "transformed": false
     },
     {
@@ -684,9 +684,9 @@
     },
     {
       "path": "release/CHANGELOG.md",
-      "input_sha256": "f656e486447870b0853673c5ea1aaaec4724fb8b842a1bd5a65750d0cea279a5",
-      "sha256": "f656e486447870b0853673c5ea1aaaec4724fb8b842a1bd5a65750d0cea279a5",
-      "bytes": 26903,
+      "input_sha256": "20d3c6af3b99017e79005b6a22ffda794c5b4e7d7dc571aabb66ab467197a031",
+      "sha256": "20d3c6af3b99017e79005b6a22ffda794c5b4e7d7dc571aabb66ab467197a031",
+      "bytes": 27802,
       "transformed": false
     },
     {

@@ -62,7 +62,7 @@ def _command(pid):
 def verified_process(pid, executable, script):
     import library_progress as progress
     owner = progress.process_identity(pid)
-    if not owner or os.path.normcase(os.path.realpath(owner['exe'])) != os.path.normcase(os.path.realpath(executable)):
+    if not owner or not image_matches(owner, executable):
         raise RuntimeError('后台解释器身份不匹配；未重启')
     args = _command(pid)
     if len(args) != 4 or args[2:] != ['--serve', '--apply'] or os.path.normcase(os.path.realpath(args[1])) != os.path.normcase(os.path.realpath(script)):
@@ -99,6 +99,16 @@ def verified_process(pid, executable, script):
             process.terminate()
             process.wait(timeout=5)
         yield stop
+
+def image_matches(owner, executable):
+    expected = executable
+    if sys.platform == 'darwin':
+        import library_progress as progress
+        current = progress.process_identity(os.getpid())
+        if not current:
+            return False
+        expected = current['exe']
+    return os.path.normcase(os.path.realpath(owner['exe'])) == os.path.normcase(os.path.realpath(expected))
 
 def restart_idle(expected_pid):
     import requests

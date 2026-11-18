@@ -40,3 +40,8 @@ class BackendUpgradeTests(unittest.TestCase):
         with patch.object(backend,'fingerprint',return_value='changed'):
             self.assertTrue(identity.public()['disk_changed'])
             self.assertNotEqual(identity.public()['build'],'changed')
+
+    def test_mac_framework_image_matches_helper_but_rejects_other_interpreter(self):
+        with patch.object(backend.sys,'platform','darwin'), patch('library_progress.process_identity',return_value={'exe':'/Framework/Python.app/Python'}):
+            self.assertTrue(backend.image_matches({'exe':'/Framework/Python.app/Python'},'/installed/runtime/bin/python3'))
+            self.assertFalse(backend.image_matches({'exe':'/unrelated/python3'},'/installed/runtime/bin/python3'))

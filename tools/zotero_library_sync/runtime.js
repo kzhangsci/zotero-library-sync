@@ -152,7 +152,7 @@ LibrarySync = {
         if (settled) return;
         settled = true; clearTimeout(timer);
         if (topic === 'process-finished' && process.exitValue === 0) resolve();
-        else reject(new LibrarySyncBridge.SafeError('RESTART', '后台未重启：可能仍有任务、预检或身份不匹配。请结束操作后再试，勿终止其他 Python 进程。'));
+        else reject(new LibrarySyncBridge.SafeError('RESTART', '后台未重启：可能仍有任务、预检或身份不匹配。请确认后台程序文件已更新，并结束操作后再试，勿终止其他 Python 进程。'));
       }};
       const args = [LibrarySyncBridge.joinPath(p.repo, 'tools', 'library_plugin_bridge.py'), '--restart-idle', String(pid), '--apply'];
       try { process.runwAsync(args, args.length, observer, false); }
