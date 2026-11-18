@@ -399,7 +399,7 @@ class LibraryQATests(unittest.TestCase):
         reports = self.root / "tools_repo" / "reports"
         module = self.root / "tools_repo" / "tools" / "library_qa.py"
         paths = []
-        with patch.object(qa, "REPORTS", reports), patch.object(qa, "__file__", str(module)):
+        with patch.object(qa, "REPORTS", reports), patch.object(qa, "DATA", self.root / "tools_repo"), patch.object(qa, "__file__", str(module)):
             for _ in range(2):
                 output = io.StringIO()
                 with contextlib.redirect_stdout(output):
