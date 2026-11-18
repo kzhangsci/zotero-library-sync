@@ -7,6 +7,7 @@ import copy
 import datetime as dt
 import hmac
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from socketserver import TCPServer
 import json
 import os
 from pathlib import Path
@@ -747,6 +748,13 @@ def write_private_manifest(path, value):
         if os.path.exists(temporary):
             os.unlink(temporary)
 
+class LoopbackHTTPServer(ThreadingHTTPServer):
+
+    def server_bind(self):
+        TCPServer.server_bind(self)
+        self.server_name = '127.0.0.1'
+        self.server_port = self.server_address[1]
+
 def serve():
     if os.name != 'nt' and sys.platform != 'darwin':
         raise RuntimeError('此版本支持 Windows 和 macOS')
@@ -759,7 +767,7 @@ def serve():
         service = Service()
         from report_retention import expire_reports
         next_cleanup = 0.0
-        with ThreadingHTTPServer(('127.0.0.1', 0), Handler) as server:
+        with LoopbackHTTPServer(('127.0.0.1', 0), Handler) as server:
             server.daemon_threads = True
             server.service, server.token = (service, secrets.token_urlsafe(32))
             server.timeout = 1

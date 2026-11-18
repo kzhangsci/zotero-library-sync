@@ -117,11 +117,16 @@ def main():
         with fitz.open(clean) as doc:assert 'Synthetic scientific text' in doc[0].get_text()
         checks.append('native_pdf_upload_copy_preserves_source')
         app=installation/'app'
+        bridge_env={**os.environ,'LIBRARY_SYNC_CONFIG':str(app/'library-sync.json')}
+        probe=command(str(app/'runtime/bin/python3'),'-c',
+                      'import sys,json;sys.path.insert(0,'+repr(str(app/'tools'))+');import library_paths as p,library_plugin_bridge as b;print(json.dumps({"data":str(p.DATA),"manifest":str(b.MANIFEST)}))',env=bridge_env)
+        actual=json.loads(probe)
+        assert Path(actual['data']).resolve()==(installation/'data').resolve(),actual
+        checks.append('installed_runtime_configuration')
         bridge_error=temp/'bridge-stderr.log'
         bridge_stderr=cleanup.enter_context(bridge_error.open('wb'))
         bridge=subprocess.Popen([str(app/'runtime/bin/python3'),str(app/'tools/library_plugin_bridge.py'),'--serve','--apply'],
-                                cwd=app,env={**os.environ,'LIBRARY_SYNC_CONFIG':str(app/'library-sync.json')},
-                                stdout=subprocess.DEVNULL,stderr=bridge_stderr)
+                                cwd=app,env=bridge_env,stdout=bridge_stderr,stderr=subprocess.STDOUT)
         def stop_bridge():
             if bridge.poll() is None:bridge.terminate()
             bridge.wait(timeout=5)
@@ -129,7 +134,7 @@ def main():
         descriptor=installation/'data/.secrets/plugin_bridge.json'
         deadline=time.monotonic()+30
         while not descriptor.is_file() and bridge.poll() is None and time.monotonic()<deadline:time.sleep(0.1)
-        assert descriptor.is_file(),'Native bridge did not publish descriptor: '+bridge_error.read_text(encoding='utf-8',errors='replace')[-2000:]
+        assert descriptor.is_file(),'Native bridge did not publish descriptor (exit='+str(bridge.poll())+'): '+bridge_error.read_text(encoding='utf-8',errors='replace')[-2000:]
         endpoint=json.loads(descriptor.read_text())
         import requests
         session=requests.Session();session.trust_env=False

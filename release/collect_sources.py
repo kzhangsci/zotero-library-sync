@@ -6,6 +6,7 @@ from pathlib import Path
 import subprocess
 import tarfile
 import zipfile
+import shutil
 
 
 def main():
@@ -37,12 +38,18 @@ def main():
     out=root/'release/dist';out.mkdir(parents=True,exist_ok=True)
     version=json.loads((root/'tools/zotero_library_sync/manifest.json').read_text(encoding='utf-8'))['version']
     record={'schema':1,'version':version,'bootstrap':args.bootstrap_mupdf,'sources':manifest}
-    (out/'third-party-sources-manifest.json').write_text(json.dumps(record,indent=2)+'\n',encoding='utf-8')
+    (out/'third-party-sources-manifest.json').write_bytes((json.dumps(record,indent=2)+'\n').encode('utf-8'))
     with zipfile.ZipFile(out/f'library-sync-{version}-third-party-sources.zip','w',compression=zipfile.ZIP_STORED) as z:
-        for row in manifest:z.write(target/row['filename'],'sources/'+row['filename'])
-        z.writestr('SOURCES.json',json.dumps(record,indent=2))
+        def add(name,data=None,file=None):
+            info=zipfile.ZipInfo(name,(2020,1,1,0,0,0));info.create_system=3;info.external_attr=0o100644<<16
+            if file is None:z.writestr(info,data)
+            else:
+                with file.open('rb') as source,z.open(info,'w') as dest:shutil.copyfileobj(source,dest)
+        for row in manifest:add('sources/'+row['filename'],file=target/row['filename'])
+        add('SOURCES.json',json.dumps(record,indent=2).encode('utf-8'))
+        add('LICENSE',file=root/'LICENSE')
         for name in ('THIRD_PARTY_SOURCE_GUIDE.md','DISTRIBUTION_LICENSE.md','AGPL-3.0.txt'):
-            z.write(root/'release'/name,name)
+            add(name,file=root/'release'/name)
     print('SOURCE_ARCHIVE_READY')
 
 

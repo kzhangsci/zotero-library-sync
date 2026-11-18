@@ -15,6 +15,13 @@ import library_sync as s
 
 
 class KeychainTests(unittest.TestCase):
+    def test_loopback_bind_has_no_reverse_dns_dependency(self):
+        from library_plugin_bridge import LoopbackHTTPServer,Handler
+        with patch('socket.getfqdn',side_effect=AssertionError('No network DNS allowed')):
+            with LoopbackHTTPServer(('127.0.0.1',0),Handler) as server:
+                self.assertEqual(server.server_name,'127.0.0.1')
+                self.assertGreater(server.server_port,1023)
+
     def test_reference_roundtrip_never_stores_payload_in_file(self):
         values = {}
         backend = types.SimpleNamespace(add=lambda account,data: values.update({account:data}), get=lambda account:values[account])
