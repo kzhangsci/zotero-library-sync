@@ -11,7 +11,7 @@ import sys
 import time
 
 def fingerprint(root):
-    names = ('library_plugin_bridge', 'library_backend', 'library_remedy', 'library_control', 'library_sync', 'library_progress', 'library_issues', 'model_api', 'sync')
+    names = ('library_plugin_bridge', 'library_backend', 'library_remedy', 'library_control', 'library_sync', 'library_progress', 'library_issues', 'library_resume', 'model_api', 'sync')
     digest = hashlib.sha256()
     for name in names:
         digest.update(name.encode())

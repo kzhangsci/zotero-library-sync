@@ -318,7 +318,11 @@ class WorkerActionTests(RemedyFixture):
         (folder/f'{CK}_ZH.md').unlink()
         en = folder/f'{CK}_EN.md'
         en.write_text(en.read_text(encoding='utf-8').replace('qc: synthetic qc marker\n',''),encoding='utf-8')
-        self.freeze_state()
+        state, _ = self.freeze_state()
+        state['baseline'] = {'schema':1}
+        state['qa_frozen'] = s.paper_fingerprint(self.paper)
+        s.save_json(self.run_dir/'state.json',state)
+        source_bytes = (self.run_dir/'state.json').read_bytes()
         before = self.live_hashes()
         note_before = (folder/f'{CK}_Note.md').read_bytes()
         other = self.lib/'papers'/'AlreadyAccepted';other.mkdir()
@@ -339,10 +343,27 @@ class WorkerActionTests(RemedyFixture):
         self.assertEqual(kept.read_bytes(),b'accepted user content')
         self.assertEqual((folder/f'{CK}_Note.md').read_bytes(),note_before)
         self.assertTrue(remedy.diagnose(self.runs,self.run_id,KEY)['accepted'])
+        import library_resume
+        updated, guards, legacy = library_resume.source_record(self.run_id)
+        self.assertFalse(legacy)
+        self.assertTrue(updated['papers'][0]['qa']['ok'])
+        self.assertIn(str(self.run_dir/f'remedy_baseline_{KEY}.json'),guards)
+        self.assertEqual((self.run_dir/'state.json').read_bytes(),source_bytes)
+        baseline=json.loads((self.run_dir/f'remedy_baseline_{KEY}.json').read_bytes())
+        record_path=self.runs/baseline['attempt']/'remedy_state.json'
+        receipt_bytes=record_path.read_bytes()
+        tampered=json.loads(receipt_bytes);tampered['result']['published'].append(str(self.primary))
+        s.save_json(record_path,tampered)
+        with self.assertRaisesRegex(RuntimeError,'超出文献目录'):
+            library_resume.source_record(self.run_id)
+        record_path.write_bytes(receipt_bytes)
         self.worker.reset_mock()
         with self.assertRaises(RuntimeError):
             remedy.remedy(self.client,self.runs,self.run_id,KEY,'recover_paper',confirm=True)
         self.worker.assert_not_called()
+        (folder/f'{CK}_Note.md').write_bytes(note_before+b'\nuser edit')
+        with self.assertRaisesRegex(RuntimeError,'验收后变化'):
+            library_resume.source_record(self.run_id)
 
     def test_recovery_failure_preserves_live_bytes_and_existing_qc_skips_qc(self):
         folder = self.seed();(folder/f'{CK}_ZH.md').unlink()

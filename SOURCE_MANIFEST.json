@@ -166,9 +166,9 @@
     },
     {
       "path": "tools/library_backend.py",
-      "input_sha256": "e32bf4182e4556d6fddde8da6958d6349efae98023e70d7beddf2799799190a8",
-      "sha256": "867df88d52f80a43f22e6e1eb1c3bb2a8c12f8a5fdc91bb603067c6b022d469c",
-      "bytes": 7588,
+      "input_sha256": "592035b1454e3432cf0f3b885db2b637f603caea8179e37943d742a5250de403",
+      "sha256": "3cfc511dd77cccc83008613de5c516c8c2878011ec5e089d3ee0c46f0c8cd7e5",
+      "bytes": 7606,
       "transformed": true
     },
     {
@@ -208,9 +208,9 @@
     },
     {
       "path": "tools/library_resume.py",
-      "input_sha256": "1218f8d374b258f62ddab91cdf9626183de277dcac4ea00c08f7f7ef5eb8801c",
-      "sha256": "012cf035361dbc9233821c2cc9ccbd71c51fc48c52c42c27f221a3086c4dfa6f",
-      "bytes": 21453,
+      "input_sha256": "14e57c374faf213e312dbe251594653755db41fc0e8a73f8689a3bd69ad864b3",
+      "sha256": "72e278a773e0e6e84bba2a6a4f0868cbc413b98b5e18370b5ca4ae59c4795354",
+      "bytes": 24371,
       "transformed": true
     },
     {
@@ -551,9 +551,9 @@
     },
     {
       "path": "tools/test_library_remedy.py",
-      "input_sha256": "6a3475643f02960ecb61a3d5dedce0d3fd435b7de7b2b6698f05540b847e3e92",
-      "sha256": "6a3475643f02960ecb61a3d5dedce0d3fd435b7de7b2b6698f05540b847e3e92",
-      "bytes": 36574,
+      "input_sha256": "6826de1672a256c9c89a3cb096bb14febd0c177a2ecaf996054c89aadfad2550",
+      "sha256": "6826de1672a256c9c89a3cb096bb14febd0c177a2ecaf996054c89aadfad2550",
+      "bytes": 37875,
       "transformed": false
     },
     {

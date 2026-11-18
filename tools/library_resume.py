@@ -116,9 +116,45 @@ def source_record(run_id):
     if set(state.get('requested', [])) != {p['key'] for p in papers}:
         raise RuntimeError('Original requested batch is not fully successful')
     legacy = 'baseline' not in state
+    guards = {str(path): digest}
     if legacy and (run_id != LEGACY_RUN or {p['key']: (p['citekey'], p.get('primary_key')) for p in papers} != LEGACY_PAPERS):
         raise RuntimeError('Missing ownership baseline; legacy recovery is not supported in this distribution')
-    for p in papers:
+    for position, p in enumerate(papers):
+        if not re.fullmatch('[A-Z0-9]{8}', str(p.get('key', ''))):
+            raise RuntimeError('Invalid original paper key')
+        baseline_path = safe_path(s.RUNS, run_id + f"/remedy_baseline_{p['key']}.json")
+        if not legacy and baseline_path.is_file():
+            from library_remedy import _effective_paper, PUBLISH_SCOPE
+            saved = read_json(baseline_path)
+            if not isinstance(saved.get('attempt'), str) or not RUN_ID.fullmatch(saved['attempt']):
+                raise RuntimeError('单篇处置凭据编号无效')
+            completion_path = safe_path(s.RUNS, saved['attempt'] + '/remedy_state.json')
+            record = read_json(completion_path)
+            if record.get('status') != 'completed' or record.get('result', {}).get('ok') is not True or saved.get('attempt') != record.get('run_id') or (record.get('key') != p['key']) or (record.get('source_run') != run_id) or (record.get('action') not in PUBLISH_SCOPE):
+                raise RuntimeError('单篇处置尚未完成或凭据不一致；未进入收尾')
+            candidate = _effective_paper(s.RUNS, run_id, p)
+            if (candidate.get('qa') or {}).get('ok') is not True:
+                raise RuntimeError('单篇处置产物在验收后变化；请复查')
+            folder = safe_path(s.LIBRARY, 'papers/' + p['citekey'])
+            published = set(record['result'].get('published', []))
+            scope = PUBLISH_SCOPE[record['action']]
+            for name in published:
+                member = Path(name)
+                if not member.is_absolute() or member.resolve() != member.absolute() or (not member.is_relative_to(folder)):
+                    raise RuntimeError('处置发布路径超出文献目录或不是规范路径')
+                relative = member.relative_to(folder)
+                if not (scope == ('*',) and (relative.parts[0] == 'assets' or member.name in {p['citekey'] + '_' + kind + '.md' for kind in ('EN', 'MD', 'ZH')}) or (len(relative.parts) == 1 and member.name in {p['citekey'] + '_' + kind + '.md' for kind in scope})):
+                    raise RuntimeError('处置发布路径超出动作范围')
+            fresh = s.validate_completed_paper(candidate)
+            if candidate['qa']['ok'] is not True:
+                raise RuntimeError('单篇处置收尾前复验未通过')
+            historical = state.get('qa_frozen', {})
+            if any((str(Path(name).resolve()) not in published and historical.get(name) != value for name, value in fresh.items())):
+                raise RuntimeError('处置范围外的原文、笔记、图片或 PDF 变化；未进入收尾')
+            state.setdefault('qa_frozen', {}).update(fresh)
+            p = candidate
+            papers[position] = p
+            guards.update({str(baseline_path): s.sha256(baseline_path), str(completion_path): s.sha256(completion_path)})
         if not re.fullmatch('[^<>:"/\\\\|?*\\x00-\\x1f]+', p['citekey']):
             raise RuntimeError('Invalid citekey path component')
         safe_path(s.LIBRARY, 'papers/' + p['citekey'])
@@ -136,7 +172,7 @@ def source_record(run_id):
         if not required <= set(hashes) <= required | {zh_name} or not all((isinstance(h, str) and SHA.fullmatch(h) for h in hashes.values())):
             raise RuntimeError('Invalid original QA hashes')
     s.assert_hashes({str(path): digest}, 'Original receipt')
-    return (state, {str(path): digest}, legacy)
+    return (state, guards, legacy)
 
 def assert_no_previous_attempt(run_id, current_id=None):
     for path in s.RUNS.glob('*/state.json'):
