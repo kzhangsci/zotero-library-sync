@@ -722,6 +722,9 @@ def write_private_manifest(path, value):
         if path.parent.is_symlink() or path.parent.stat().st_uid != os.getuid():
             raise RuntimeError('桥接凭据目录的所有权无效')
         os.chmod(path.parent, 448)
+        acl = subprocess.run(['/bin/chmod', '-N', str(path.parent)], capture_output=True, timeout=5)
+        if acl.returncode:
+            raise RuntimeError('不能保护桥接凭据目录的 macOS 访问权限')
         from zotero_local import _atomic_bytes
         _atomic_bytes(path, json.dumps(value).encode('utf-8'))
         os.chmod(path, 384)

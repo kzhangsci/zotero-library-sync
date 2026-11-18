@@ -166,9 +166,9 @@
     },
     {
       "path": "tools/library_plugin_bridge.py",
-      "input_sha256": "41d05b2b433dd1df902874ce3f1e8682e40b5a3e9713b75df301cb0c0843b525",
-      "sha256": "58f46ee7ccd809b41063b54b9b5dd6cc11375cd4dfda526142aa8c2dfeb17979",
-      "bytes": 46966,
+      "input_sha256": "490323df20a887efa2fc32fd77a43f0b9b96c802d015c03992213c730dbb55c1",
+      "sha256": "f9527a53e740588935fd6b2cbe90c0eecd45b3b34a57783ec73bc86e3d30e091",
+      "bytes": 47181,
       "transformed": true
     },
     {
@@ -271,9 +271,9 @@
     },
     {
       "path": "tools/zotero_local.py",
-      "input_sha256": "c3ede9f34136500e2128242fe87cced2b5a4d77fd81e13f139f8840abf680de1",
-      "sha256": "5028725b84f49c871f652e5bb8091de6afa8c28cefd13824a41143193179561b",
-      "bytes": 61802,
+      "input_sha256": "c919e89784179a78396215a22c1bc40bf39b7b55b12d645ba510945d475d23e3",
+      "sha256": "ca7854c7bbe4b68961d0b19b89c20d389bd9dad0b96d87b8e0298c42b465ab3a",
+      "bytes": 61875,
       "transformed": true
     },
     {
@@ -306,9 +306,9 @@
     },
     {
       "path": "tools/zotero_library_sync/panel.js",
-      "input_sha256": "6622f0b5f3e90258f73ba95742a53824662861d6a06eb4f93b9795020b92dd89",
-      "sha256": "6622f0b5f3e90258f73ba95742a53824662861d6a06eb4f93b9795020b92dd89",
-      "bytes": 153915,
+      "input_sha256": "8ba40177b9b9de854d33187499b9bb6f2278d6f1822036308c971c5c77224394",
+      "sha256": "8ba40177b9b9de854d33187499b9bb6f2278d6f1822036308c971c5c77224394",
+      "bytes": 153929,
       "transformed": false
     },
     {

@@ -117,13 +117,13 @@ def _item(value, key=None):
 
 def _atomic_bytes(path, data):
     path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
     from library_platform import IS_MAC, REFERENCE_PREFIX, discard_keychain_reference
     protected = IS_MAC and data.startswith(REFERENCE_PREFIX)
-    previous = path.read_bytes() if protected and path.is_file() else None
-    committed = False
-    fd, temporary = tempfile.mkstemp(prefix=path.name + '.', dir=path.parent)
+    previous, committed, temporary = (None, False, None)
     try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        previous = path.read_bytes() if protected and path.is_file() else None
+        fd, temporary = tempfile.mkstemp(prefix=path.name + '.', dir=path.parent)
         with os.fdopen(fd, 'wb') as stream:
             stream.write(data)
             stream.flush()
@@ -131,7 +131,7 @@ def _atomic_bytes(path, data):
         os.replace(temporary, path)
         committed = True
     finally:
-        if os.path.exists(temporary):
+        if temporary is not None and os.path.exists(temporary):
             os.unlink(temporary)
         if protected:
             try:

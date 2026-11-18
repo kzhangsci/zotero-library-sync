@@ -914,7 +914,7 @@ var LibrarySyncPanel = (() => {
         if (this.pathsDirty) throw new Bridge.SafeError("PATH", "请先保存修改后的路径。");
         if (!this.el("repo").value.trim() || !this.el("pythonw").value.trim()) {
           this.el("paths-details").open = true;
-          throw new Bridge.SafeError("PATH", "尚未找到后台程序。XPI 只安装界面；已有用户请填写原程序目录和 pythonw.exe，新用户先安装 Windows 后台包。填写后点击“保存路径”，再连接。");
+          throw new Bridge.SafeError("PATH", "尚未找到后台程序。XPI 只安装界面；已有用户请填写原程序目录和 Python 执行文件，新用户先安装对应系统的后台包。填写后点击“保存路径”，再连接。");
         }
         const keepDraft = this.configDirty;
         this.connected = false; this.statusKnown = false; this.configured = false; this.credentialsVerified = false;
