@@ -20,6 +20,8 @@ def command(*args, **kwargs):
     if result.returncode:
         if any(str(arg).endswith('install_macos.py') for arg in args):
             raise RuntimeError('Synthetic installer failed:\n'+result.stderr.decode(errors='replace')[-4000:])
+        if '--restart-idle' in args:
+            raise RuntimeError('Synthetic idle upgrade failed:\n'+result.stderr.decode(errors='replace')[-2000:])
         raise RuntimeError('Native acceptance command failed')
     return result.stdout.decode().strip()
 
@@ -188,6 +190,20 @@ def main():
         session=requests.Session();session.trust_env=False
         response=session.get(f"http://127.0.0.1:{endpoint['port']}/v1/status",headers={'X-Library-Sync-Token':endpoint['token']},timeout=5)
         response.raise_for_status();checks.append('installed_native_bridge_status')
+        command(str(app/'runtime/bin/python3'),str(app/'tools/library_plugin_bridge.py'),
+                '--restart-idle',str(endpoint['pid']),'--apply',env=bridge_env)
+        deadline=time.monotonic()+15
+        while time.monotonic()<deadline:
+            current=json.loads(descriptor.read_text())
+            if current['pid']!=endpoint['pid']:break
+            time.sleep(.1)
+        else:raise RuntimeError('Replacement native bridge not confirmed')
+        import psutil
+        replacement=psutil.Process(current['pid'])
+        cleanup.callback(lambda: replacement.terminate() if replacement.is_running() else None)
+        assert str(app/'tools/library_plugin_bridge.py') in replacement.cmdline()
+        replacement.terminate();replacement.wait(timeout=5)
+        checks.append('native_idle_backend_replace')
         if args.zotero:
             stop_bridge()  # Gecko must now exercise its real nsIProcess launcher.
             def stop_gecko_bridge():
@@ -228,7 +244,8 @@ await until(()=>panel?.librarySyncReady===true);check('ready',panel?.librarySync
 check('version',panel?.LibrarySyncBridge?.VERSION==='0.2.0-beta.16');
 await phase('bridge');const host=panel.librarySyncController.host;const client=host.createClient();const status=await client.connect(true);
 check('bridge_launch_and_connection',!!status);
-await phase('idle_upgrade');await host.restartBackend(status.backend.pid);client.close();
+await phase('idle_upgrade');await until(()=>!panel.librarySyncController.busy && !panel.librarySyncController.pending && !Object.keys(panel.librarySyncController.catalogPending).length);
+await host.restartBackend(status.backend.pid);client.close();
 const replacement=host.createClient();const upgraded=await replacement.connect(true);
 check('idle_backend_restart',upgraded.backend.pid!==status.backend.pid && upgraded.capabilities.includes('paper-recovery-v1'));
 replacement.close();panel?.close();}}

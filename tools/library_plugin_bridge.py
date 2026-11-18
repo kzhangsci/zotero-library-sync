@@ -438,7 +438,7 @@ class Service:
         with self.lock:
             if self.stopping:
                 raise RequestError('后台正在退出，请稍后重新连接')
-            self.requests += 1
+            self.requests += int(method != 'GET')
         try:
             if method == 'POST' and path == '/v1/service/stop':
                 object_fields(payload, {'confirm'})
@@ -453,7 +453,7 @@ class Service:
             return self._dispatch(method, path, payload)
         finally:
             with self.lock:
-                self.requests -= 1
+                self.requests -= int(method != 'GET')
 
     def _dispatch(self, method, path, payload):
         from model_api import public_config, save_config, save_keys, model_choices, test_connection, profile_defaults, validate_profile, zcode_plan_summary

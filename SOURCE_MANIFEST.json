@@ -33,9 +33,9 @@
     },
     {
       "path": "tools/macos_acceptance.py",
-      "input_sha256": "0b69b5e99f51d18d57d916a9c91efe17a5bfc636ca774f4220429b370d0498b6",
-      "sha256": "0b69b5e99f51d18d57d916a9c91efe17a5bfc636ca774f4220429b370d0498b6",
-      "bytes": 16384,
+      "input_sha256": "fffe79e5767ca15187b81bd5f8c42211c5dc935b9a3b3b6f66d33aed89c2d336",
+      "sha256": "fffe79e5767ca15187b81bd5f8c42211c5dc935b9a3b3b6f66d33aed89c2d336",
+      "bytes": 17516,
       "transformed": false
     },
     {
@@ -180,9 +180,9 @@
     },
     {
       "path": "tools/library_plugin_bridge.py",
-      "input_sha256": "c28daa46b9cdfbb1cc6e1972e7e8c93009de477c393f299fd3f447356ce522dc",
-      "sha256": "a192a55a05a9b0c755885b7125e74f6b4756d8c2fe27fa71d9836fbedf1fed58",
-      "bytes": 48931,
+      "input_sha256": "836b7e9e4fa294c405470014a763e865dad70397c246be45b0d92f71c6b37768",
+      "sha256": "1bc0344ebda8709ac8caa0ab4f768a5f602906397a9b5c009231d7b091cc43a1",
+      "bytes": 48969,
       "transformed": true
     },
     {
