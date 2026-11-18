@@ -5,6 +5,9 @@ on:
     branches: [beta16-validation]
 permissions:
   contents: read
+concurrency:
+  group: beta16-macos-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   macos:
     strategy:

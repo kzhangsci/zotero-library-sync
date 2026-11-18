@@ -167,10 +167,13 @@ def main():
             helper='''
 function startup(){setTimeout(run,500);}
 async function run(){let result={checks:[],failures:[]};const check=(k,v)=>(v?result.checks:result.failures).push(k);
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+const until=async fn=>{const end=Date.now()+15000;let value;while(!(value=fn())&&Date.now()<end)await sleep(100);return value;};
 try{await Zotero.initializationPromise;await Zotero.uiReadyPromise;await new Promise(r=>setTimeout(r,1500));
 let win=Zotero.getMainWindows()[0];let menu=[...win.document.querySelectorAll('menuitem')].find(e=>/Library Sync/.test(e.getAttribute('label')||''));
-check('menu',!!menu);if(menu){menu.dispatchEvent(new win.Event('command'));await new Promise(r=>setTimeout(r,1000));
-let panel=Services.wm.getMostRecentWindow('library-sync:panel');check('panel',!!panel);check('ready',panel?.librarySyncReady===true);
+check('menu',!!menu);if(menu){menu.dispatchEvent(new win.Event('command'));
+let panel=await until(()=>Services.wm.getMostRecentWindow('library-sync:panel'));check('panel',!!panel);
+await until(()=>panel?.librarySyncReady===true);check('ready',panel?.librarySyncReady===true);
 check('version',panel?.LibrarySyncBridge?.VERSION==='0.2.0-beta.16');
 const host=panel.librarySyncController.host;const client=host.createClient();const status=await client.connect(true);
 check('bridge_launch_and_connection',!!status);client.close();panel?.close();}}
@@ -181,7 +184,8 @@ function shutdown(){} function install(){} function uninstall(){}
             manifest={'manifest_version':2,'name':'Isolated acceptance','version':'1.0','applications':{'zotero':{'id':'qa@local.invalid','update_url':'https://library-sync.invalid/updates.json','strict_min_version':'10.0','strict_max_version':'10.0.*'}}}
             with zipfile.ZipFile(extensions/'qa@local.invalid.xpi','w') as z:
                 z.writestr('manifest.json',json.dumps(manifest));z.writestr('bootstrap.js','const OUTPUT='+json.dumps(str(result))+';\n'+helper)
-            proc=subprocess.Popen([str(args.zotero),'-no-remote','-profile',str(profile),'-headless'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+            proc=subprocess.Popen([str(args.zotero),'-no-remote','-profile',str(profile),'-headless'],
+                                  env={**bridge_env,'MOZ_NO_REMOTE':'1'},stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
             try:proc.wait(timeout=60)
             except subprocess.TimeoutExpired:proc.terminate();proc.wait(timeout=10);raise
             state=json.loads(result.read_text());assert not state['failures'],state
