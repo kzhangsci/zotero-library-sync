@@ -184,19 +184,22 @@ def main():
             import zipfile
             helper='''
 function startup(){setTimeout(run,500);}
-async function run(){let result={checks:[],failures:[]};const check=(k,v)=>(v?result.checks:result.failures).push(k);
+async function run(){let result={checks:[],failures:[],phase:'initialization'};
+const save=()=>IOUtils.writeJSON(OUTPUT,result);
+const phase=async value=>{result.phase=value;await save();};
+const check=(k,v)=>(v?result.checks:result.failures).push(k);
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 const until=async fn=>{const end=Date.now()+15000;let value;while(!(value=fn())&&Date.now()<end)await sleep(100);return value;};
-try{await Zotero.initializationPromise;await Zotero.uiReadyPromise;await new Promise(r=>setTimeout(r,1500));
+try{await save();await Zotero.initializationPromise;await phase('ui');await Zotero.uiReadyPromise;await new Promise(r=>setTimeout(r,1500));
 let win=Zotero.getMainWindows()[0];let menu=[...win.document.querySelectorAll('menuitem')].find(e=>/Library Sync/.test(e.getAttribute('label')||''));
-check('menu',!!menu);if(menu){menu.dispatchEvent(new win.Event('command'));
+check('menu',!!menu);await phase('panel');if(menu){menu.dispatchEvent(new win.Event('command'));
 let panel=await until(()=>Services.wm.getMostRecentWindow('library-sync:panel'));check('panel',!!panel);
 await until(()=>panel?.librarySyncReady===true);check('ready',panel?.librarySyncReady===true);
 check('version',panel?.LibrarySyncBridge?.VERSION==='0.2.0-beta.16');
-const host=panel.librarySyncController.host;const client=host.createClient();const status=await client.connect(true);
+await phase('bridge');const host=panel.librarySyncController.host;const client=host.createClient();const status=await client.connect(true);
 check('bridge_launch_and_connection',!!status);client.close();panel?.close();}}
 catch(e){result.failures.push('exception');result.error=String(e.message).slice(0,400);}
-finally{await IOUtils.writeJSON(OUTPUT,result);Services.startup.quit(Ci.nsIAppStartup.eForceQuit);}}
+finally{await phase('complete');Services.startup.quit(Ci.nsIAppStartup.eForceQuit);}}
 function shutdown(){} function install(){} function uninstall(){}
 '''
             manifest={'manifest_version':2,'name':'Isolated acceptance','version':'1.0','applications':{'zotero':{'id':'qa@local.invalid','update_url':'https://library-sync.invalid/updates.json','strict_min_version':'10.0','strict_max_version':'10.0.*'}}}
@@ -204,8 +207,11 @@ function shutdown(){} function install(){} function uninstall(){}
                 z.writestr('manifest.json',json.dumps(manifest));z.writestr('bootstrap.js','const OUTPUT='+json.dumps(str(result))+';\n'+helper)
             proc=subprocess.Popen([str(args.zotero),'-no-remote','-profile',str(profile),'-headless'],
                                   env={**bridge_env,'MOZ_NO_REMOTE':'1'},stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
-            try:proc.wait(timeout=60)
-            except subprocess.TimeoutExpired:proc.terminate();proc.wait(timeout=10);raise
+            try:proc.wait(timeout=150)
+            except subprocess.TimeoutExpired:
+                proc.terminate();proc.wait(timeout=10)
+                state=json.loads(result.read_text()) if result.is_file() else {'phase':'before_helper_startup'}
+                raise RuntimeError('Isolated Zotero startup timed out: '+json.dumps(state)) from None
             state=json.loads(result.read_text());assert not state['failures'],state
             checks.extend('zotero_'+name for name in state['checks'])
     args.output.write_text(json.dumps({'platform':sys.platform,'checks':checks,'model_requests':0,'user_profile_opened':False,'ok':True},indent=2))
