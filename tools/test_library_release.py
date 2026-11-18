@@ -93,7 +93,7 @@ class ExportTests(unittest.TestCase):
 
     def test_import_closure_and_compile(self):
         exported = {Path(x).stem for x in self.sources if x.startswith("tools/") and x.endswith(".py")}
-        external = {"fitz", "requests", "urllib3", "yaml"}
+        external = {"fitz", "requests", "urllib3", "yaml", "psutil"}  # psutil is pinned in the macOS lock.
         for module in export_rules.RUNTIME_MODULES:
             value = self.sources[f"tools/{module}.py"]
             compile(value, module + ".py", "exec")

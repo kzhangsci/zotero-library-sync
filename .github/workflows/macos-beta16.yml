@@ -23,7 +23,8 @@ jobs:
       - name: Fetch hash-pinned macOS dependencies
         run: python -B release/fetch_macos_dependencies.py --apply
       - name: Prepare isolated test dependencies
-        run: python -m pip --isolated install --no-index --find-links release/vendor/macos --require-hashes --only-binary=:all: -r release/requirements-macos.lock
+        run: >-
+          python -m pip --isolated install --no-index --find-links release/vendor/macos --require-hashes --only-binary=:all: -r release/requirements-macos.lock
       - name: Backend regression
         env:
           PYTHONPATH: tools
