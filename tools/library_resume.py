@@ -125,10 +125,12 @@ def source_record(run_id):
         baseline_path = safe_path(s.RUNS, run_id + f"/remedy_baseline_{p['key']}.json")
         if not legacy and baseline_path.is_file():
             from library_remedy import _effective_paper, PUBLISH_SCOPE
+            baseline_digest = s.sha256(baseline_path)
             saved = read_json(baseline_path)
             if not isinstance(saved.get('attempt'), str) or not RUN_ID.fullmatch(saved['attempt']):
                 raise RuntimeError('单篇处置凭据编号无效')
             completion_path = safe_path(s.RUNS, saved['attempt'] + '/remedy_state.json')
+            completion_digest = s.sha256(completion_path)
             record = read_json(completion_path)
             if record.get('status') != 'completed' or record.get('result', {}).get('ok') is not True or saved.get('attempt') != record.get('run_id') or (record.get('key') != p['key']) or (record.get('source_run') != run_id) or (record.get('action') not in PUBLISH_SCOPE):
                 raise RuntimeError('单篇处置尚未完成或凭据不一致；未进入收尾')
@@ -154,7 +156,7 @@ def source_record(run_id):
             state.setdefault('qa_frozen', {}).update(fresh)
             p = candidate
             papers[position] = p
-            guards.update({str(baseline_path): s.sha256(baseline_path), str(completion_path): s.sha256(completion_path)})
+            guards.update({str(baseline_path): baseline_digest, str(completion_path): completion_digest})
         if not re.fullmatch('[^<>:"/\\\\|?*\\x00-\\x1f]+', p['citekey']):
             raise RuntimeError('Invalid citekey path component')
         safe_path(s.LIBRARY, 'papers/' + p['citekey'])
@@ -171,7 +173,7 @@ def source_record(run_id):
             required.add(zh_name)
         if not required <= set(hashes) <= required | {zh_name} or not all((isinstance(h, str) and SHA.fullmatch(h) for h in hashes.values())):
             raise RuntimeError('Invalid original QA hashes')
-    s.assert_hashes({str(path): digest}, 'Original receipt')
+    s.assert_hashes(guards, 'Original and remedy receipts')
     return (state, guards, legacy)
 
 def assert_no_previous_attempt(run_id, current_id=None):

@@ -208,9 +208,9 @@
     },
     {
       "path": "tools/library_resume.py",
-      "input_sha256": "14e57c374faf213e312dbe251594653755db41fc0e8a73f8689a3bd69ad864b3",
-      "sha256": "72e278a773e0e6e84bba2a6a4f0868cbc413b98b5e18370b5ca4ae59c4795354",
-      "bytes": 24371,
+      "input_sha256": "ecad017775bd4562db6f7b829d3474953faa42c613cd4076ed9175849a89a7d7",
+      "sha256": "35678aa7079f4f00df908757178ae92489ec0ef8fd29c1e3193850dee541509f",
+      "bytes": 24466,
       "transformed": true
     },
     {
@@ -684,9 +684,9 @@
     },
     {
       "path": "release/CHANGELOG.md",
-      "input_sha256": "1e178b374cd8b2e95a2761431f5dbd1d473ff8a4421cde9e36a7f5c253a34802",
-      "sha256": "1e178b374cd8b2e95a2761431f5dbd1d473ff8a4421cde9e36a7f5c253a34802",
-      "bytes": 28066,
+      "input_sha256": "8e7fb065a21be4a7ea10458d7a65ab2b12f68f616b14956740189d4853e75704",
+      "sha256": "8e7fb065a21be4a7ea10458d7a65ab2b12f68f616b14956740189d4853e75704",
+      "bytes": 28337,
       "transformed": false
     },
     {
