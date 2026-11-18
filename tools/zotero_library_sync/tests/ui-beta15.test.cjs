@@ -148,6 +148,32 @@ test("remedy executes only after a token-bound preview and explicit confirmation
   u.controller.close();
 });
 
+test('a remedy lasting over ten minutes remains attached until its result', async () => {
+  const f=diagnosisFixture(BLOCKED_VIEW());const u=ui(f);await u.controller.init();await openDiagnosis(u);
+  const original=u.controller.awaitOperation.bind(u.controller);
+  u.controller.awaitOperation=async(id,label,limit)=>{
+    if(label!=='处置执行')return original(id,label,limit);
+    const operation=u.controller.client.operation, now=Date.now, timer=u.window.setTimeout;
+    let calls=0, time=0;
+    u.controller.client.operation=async()=>calls++===0 ? {status:'running'} : {status:'completed',result:f.remedyApplied};
+    Date.now=()=>{time+=11*60000;return time;};u.window.setTimeout=fn=>queueMicrotask(fn);
+    try{return await original(id,label,limit);}
+    finally{Date.now=now;u.window.setTimeout=timer;u.controller.client.operation=operation;}
+  };
+  await u.el('diagnosis-remedies').children.find(b=>b.remedyAction==='repair_zh').emit('click');
+  assert.match(u.el('message').textContent,/处置完成/);
+  u.controller.close();
+});
+
+test('completed operation with failed candidate is reported as unsuccessful', async () => {
+  const f=diagnosisFixture(BLOCKED_VIEW());f.remedyApplied={ok:false,message:'候选未通过；未发布'};
+  const u=ui(f);await u.controller.init();await openDiagnosis(u);
+  await u.el('diagnosis-remedies').children.find(b=>b.remedyAction==='repair_zh').emit('click');
+  assert.match(u.el('message').textContent,/处置未通过/);
+  assert.equal(u.el('message').getAttribute('data-error'),'true');
+  u.controller.close();
+});
+
 test("declining the remedy confirmation executes nothing", async () => {
   const f = diagnosisFixture(BLOCKED_VIEW());
   const u = ui(f); await u.controller.init();

@@ -1308,6 +1308,7 @@ var LibrarySyncPanel = (() => {
         const result = await this.client.operation(id);
         if (result.status !== "running") return result;
         if (Date.now() - started > timeoutMs) throw new Bridge.SafeError("OPERATION", `${label}超时；后台可能仍在执行，请稍后刷新诊断。`);
+        if (label === '处置执行') this.text('diagnosis-result', `处置仍在后台执行，已等待 ${duration((Date.now()-started)/1000)}。关闭面板不会终止后台；可稍后重新打开详情查看结果，请勿重复提交。`);
         await new Promise(resolve => this.window.setTimeout(resolve, 1500));
       }
       throw new Bridge.SafeError("CLOSED", "面板已关闭。");
@@ -1451,13 +1452,14 @@ var LibrarySyncPanel = (() => {
           if (!this.window.confirm(confirmLines.join("\n") + "\n\n确认执行？")) return;
           const applyId = await this.client.remedySubmit(runId, key, action, { confirm: true, params, token });
           if (this.closed) return;
-          const applied = await this.awaitOperation(applyId, "处置执行", 600000);
+          const applied = await this.awaitOperation(applyId, "处置执行", 7200000);
           if (this.closed) return;
           const text = applied.status === "failed"
             ? "处置失败：" + this.client.redact(applied.error || "请查看任务报告。")
             : "处置结果：" + this.client.redact(JSON.stringify(applied.result, null, 2)).slice(0, 6000);
           this.text("diagnosis-result", text);
-          this.message(applied.status === "failed" ? "处置失败；详情见诊断区。" : "处置完成；详情见诊断区。", applied.status === "failed");
+          const failed = applied.status === 'failed' || applied.result?.ok === false;
+          this.message(failed ? "处置未通过；详情见诊断区。" : "处置完成；详情见诊断区。", failed);
           // Refresh the diagnosis view so statuses/remedies move with reality.
           const fresh = await this.client.diagnosis(runId, key);
           if (!this.closed) { this.diagnosis = fresh; this.renderDiagnosis(); this.text("diagnosis-result", text); }

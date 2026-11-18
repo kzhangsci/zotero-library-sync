@@ -320,9 +320,9 @@
     },
     {
       "path": "tools/zotero_library_sync/panel.js",
-      "input_sha256": "e02d544e9c8235287307c5cff73fb0b3f88c8b952b9dc50ecdd90b3daceb7d04",
-      "sha256": "e02d544e9c8235287307c5cff73fb0b3f88c8b952b9dc50ecdd90b3daceb7d04",
-      "bytes": 156704,
+      "input_sha256": "dc806df6f374ab7ca2265f45afbf4b723dde567d47e27bbaac653b6bef50dfbe",
+      "sha256": "dc806df6f374ab7ca2265f45afbf4b723dde567d47e27bbaac653b6bef50dfbe",
+      "bytes": 156999,
       "transformed": false
     },
     {
@@ -390,9 +390,9 @@
     },
     {
       "path": "tools/zotero_library_sync/tests/ui-beta15.test.cjs",
-      "input_sha256": "b19d85161222f2152870eab8303454a6588215e91af03d6f45f14d4084567ee8",
-      "sha256": "b19d85161222f2152870eab8303454a6588215e91af03d6f45f14d4084567ee8",
-      "bytes": 16402,
+      "input_sha256": "c29d2603681df169f568b6304853c3f2cddc59e279c0a30862ddaeab3e849b6c",
+      "sha256": "c29d2603681df169f568b6304853c3f2cddc59e279c0a30862ddaeab3e849b6c",
+      "bytes": 17968,
       "transformed": false
     },
     {
@@ -684,9 +684,9 @@
     },
     {
       "path": "release/CHANGELOG.md",
-      "input_sha256": "20d3c6af3b99017e79005b6a22ffda794c5b4e7d7dc571aabb66ab467197a031",
-      "sha256": "20d3c6af3b99017e79005b6a22ffda794c5b4e7d7dc571aabb66ab467197a031",
-      "bytes": 27802,
+      "input_sha256": "1e178b374cd8b2e95a2761431f5dbd1d473ff8a4421cde9e36a7f5c253a34802",
+      "sha256": "1e178b374cd8b2e95a2761431f5dbd1d473ff8a4421cde9e36a7f5c253a34802",
+      "bytes": 28066,
       "transformed": false
     },
     {
