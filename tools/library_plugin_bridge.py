@@ -31,7 +31,7 @@ PREVIEW_TTL = 600
 CATALOG_TTL = 600.0
 CATALOG_QUEUE_LIMIT = 8
 CATALOG_CACHE_LIMIT = 8
-CAPABILITIES = ['keys-v1', 'mineru-v1', 'translation-policy-v1', 'credential-reveal-v1', 'model-choices-v1', 'model-profiles-v2', 'model-test-role-v1', 'pause-resume-v1', 'history-v1', 'item-selection-v1', 'source-refresh-v1', 'official-model-catalog-v1', 'catalog-cache-v1', 'tongji-api-v1', 'preview-rebind-v1', 'translation-repair-v1', 'report-retention-v1', 'zcode-plans-v1', 'pause-recovery-v1', 'resume-model-choice-v1', 'diagnosis-v1', 'remedy-v1', 'issues-ledger-v1', 'acronyms-v1']
+CAPABILITIES = ['keys-v1', 'mineru-v1', 'translation-policy-v1', 'credential-reveal-v1', 'model-choices-v1', 'model-profiles-v2', 'model-test-role-v1', 'pause-resume-v1', 'history-v1', 'item-selection-v1', 'source-refresh-v1', 'official-model-catalog-v1', 'catalog-cache-v1', 'tongji-api-v1', 'preview-rebind-v1', 'translation-repair-v1', 'report-retention-v1', 'zcode-plans-v1', 'pause-recovery-v1', 'resume-model-choice-v1', 'diagnosis-v1', 'remedy-v1', 'issues-ledger-v1', 'acronyms-v1', 'backend-restart-v1', 'paper-recovery-v1']
 REVEAL_ERROR = '无法显示密钥；请检查已保存凭据并明确确认显示。'
 
 class RequestError(ValueError):
@@ -155,6 +155,10 @@ class Service:
         self.rebound = {}
         self.remedy_previews = {}
         self.last_access = time.monotonic()
+        from library_backend import Identity
+        self.identity = Identity(Path(__file__).resolve().parents[1])
+        self.stopping = False
+        self.requests = 0
 
     def _prune(self):
         if len(self.operations) < 64:
@@ -241,13 +245,13 @@ class Service:
         latest = progress._read_json(workflow.RUNS / 'latest.json')
         run_id = selected_run or (owner['id'] if owner else (latest or {}).get('id'))
         if run_id is None:
-            return {'active': False, 'view': None, 'text': '尚无同步任务。打开面板不会启动同步。', 'capabilities': CAPABILITIES}
+            return {'active': False, 'view': None, 'text': '尚无同步任务。打开面板不会启动同步。', 'capabilities': CAPABILITIES, 'backend': self.identity.public()}
         view = progress.snapshot(workflow.RUNS, run_id, workflow.LIBRARY)
         submitted = workflow.RUNS / run_id / 'resume_dispatch.json'
         if submitted.is_file():
             dispatch = progress._read_json(submitted)
             view.update(can_resume=False, can_resume_finalize=False, resumed_as=dispatch.get('run_id'))
-        return {'active': bool(owner), 'view': view, 'text': progress.render(view), 'capabilities': CAPABILITIES, 'historical': bool(selected_run and (not owner or owner['id'] != selected_run))}
+        return {'active': bool(owner), 'view': view, 'text': progress.render(view), 'capabilities': CAPABILITIES, 'backend': self.identity.public(), 'historical': bool(selected_run and (not owner or owner['id'] != selected_run))}
 
     def history(self):
         runs = []
@@ -431,6 +435,27 @@ class Service:
             return {'title': title, 'proposed': proposed, 'changed': True, 'overrides_base': bool(overridden), 'message': ('已保存（覆盖基础表中的 ' + overridden + '）' if overridden else '已保存') + '；重新预演后生效。新映射仍会经过键/附件授权核验，不会绕过。'}
 
     def dispatch(self, method, path, payload):
+        with self.lock:
+            if self.stopping:
+                raise RequestError('后台正在退出，请稍后重新连接')
+            self.requests += 1
+        try:
+            if method == 'POST' and path == '/v1/service/stop':
+                object_fields(payload, {'confirm'})
+                if payload.get('confirm') is not True:
+                    raise RequestError('重启后台需要明确操作')
+                with self.lock:
+                    if self.requests != 1 or workflow.active_controller() or any((not f.done() for f in self.operations.values())):
+                        raise RequestError('任务或后台操作尚未结束，未重启')
+                    workflow.assert_idle()
+                    self.stopping = True
+                    return {'stopping': True}
+            return self._dispatch(method, path, payload)
+        finally:
+            with self.lock:
+                self.requests -= 1
+
+    def _dispatch(self, method, path, payload):
         from model_api import public_config, save_config, save_keys, model_choices, test_connection, profile_defaults, validate_profile, zcode_plan_summary
         self.last_access = time.monotonic()
         if method == 'GET' and path == '/v1/status':
@@ -772,7 +797,7 @@ def serve():
             server.service, server.token = (service, secrets.token_urlsafe(32))
             server.timeout = 1
             write_private_manifest(MANIFEST, {'schema': 1, 'host': '127.0.0.1', 'port': server.server_port, 'token': server.token, 'pid': os.getpid()})
-            while time.monotonic() - service.last_access < 1800 or any((not f.done() for f in list(service.operations.values()))):
+            while not service.stopping and (time.monotonic() - service.last_access < 1800 or any((not f.done() for f in list(service.operations.values())))):
                 server.handle_request()
                 if time.monotonic() >= next_cleanup:
                     expire_reports(workflow.REPORTS, workflow.RUNS, apply=True)
@@ -786,11 +811,15 @@ def serve():
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument('--serve', action='store_true')
+    ap.add_argument('--restart-idle', type=int, metavar='EXPECTED_PID')
     modes = ap.add_mutually_exclusive_group()
     modes.add_argument('--apply', action='store_true')
     modes.add_argument('--dry-run', action='store_true')
     ap.add_argument('--limit', type=int, default=0, help='reserved; never triggers a paper sync')
     args = ap.parse_args(argv)
+    if args.restart_idle and args.apply:
+        from library_backend import restart_idle
+        return restart_idle(args.restart_idle)
     if args.serve and args.apply:
         return serve()
     print('dry-run: 本机桥接尚未启动；--serve --apply 仅启动面板桥接，不同步论文。')

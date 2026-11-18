@@ -10,7 +10,7 @@
 
 ## 下载和安装
 
-从 [GitHub Releases](https://github.com/kzhangsci/zotero-library-sync/releases) 下载对应版本 XPI（本地 beta.16 候选产物位于 release/dist），在 Zotero 的插件管理器中从文件安装。新安装还需要 Windows 后台包。已有用户应等当前任务结束后更新插件，并重启空闲后台服务以加载后台修复。以下命令可用源码和官方依赖生成完整安装包。准备 Windows x64、Python 3.12 或以上、Git、Zotero 和 Better BibTeX，在下载并解压的源码根目录运行：
+从 [GitHub Releases](https://github.com/kzhangsci/zotero-library-sync/releases) 下载对应版本 XPI（本地 beta.16 候选产物位于 release/dist），在 Zotero 的插件管理器中从文件安装。新安装还需要对应系统的后台包；macOS 安装请按上面的 macOS 指南操作。已有用户应等当前任务结束后更新插件，并重启空闲后台服务以加载后台修复。以下命令可用源码和官方依赖生成完整安装包。准备 Windows x64、Python 3.12 或以上、Git、Zotero 和 Better BibTeX，在下载并解压的源码根目录运行：
 
 ```powershell
 py -3 -B release/fetch_dependencies.py --apply
@@ -21,7 +21,7 @@ py -3 -B tools/build_library_release.py --apply
 
 ## 配置 Windows 后台
 
-解压 `library-sync-0.2.0-beta.15-windows-x64.zip` 到普通目录。先预演：
+解压 `library-sync-0.2.0-beta.16-windows-x64.zip` 到普通目录。先预演：
 
 ```powershell
 .\setup.ps1 -LibraryDir 'D:\Research\Library' -BaselineDate '2026-10-25' `
@@ -50,7 +50,7 @@ DATA 的 `.gitignore` 排除凭据、缓存、解析产物、output 和 CLI 工�
 Library 由用户单独选择。安装配置为 `app/library-sync.json`，没有个人预设路径或密钥。
 默认 Zotero 数据目录为当前用户的 `Zotero`，自定义数据目录可在配置中填写 `zotero_data_dir`。
 
-在 Zotero 的插件管理界面从文件安装 `app/addon/library-sync-0.2.0-beta.15.xpi`。仅安装 XPI 不包含本版 Python 后台变更（暂停/恢复增强、诊断与处置、期刊基础表都在后台）：面板会按能力握手检测旧后台并禁用相应入口、给出升级提示，不影响正在运行的任务；请同时更新 Windows 后台包。升级时保留原有 `data` 目录即可保留个人期刊覆盖表与问题台账。
+在 Zotero 的插件管理界面从文件安装 `app/addon/library-sync-0.2.0-beta.16.xpi`。仅安装 XPI 不包含本版 Python 后台变更（暂停/恢复增强、诊断与处置、期刊基础表都在后台）：面板会按能力握手检测旧后台并禁用相应入口、给出升级提示，不影响正在运行的任务；请同时更新 Windows 后台包。升级时保留原有 `data` 目录即可保留个人期刊覆盖表与问题台账。
 默认安装可自动定位；自定义安装需在插件设置中填写 `app` 与 `app/runtime/pythonw.exe`。
 已保存的旧插件路径优先于自动发现，迁移时应明确更新这两个路径。
 更新源为保留域名 `.invalid`；当前只支持手动更新，没有部署自动更新服务。

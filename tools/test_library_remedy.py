@@ -312,6 +312,48 @@ class WorkerActionTests(RemedyFixture):
         args = self.worker.call_args.args[0]
         self.assertEqual(args[args.index("--steps") + 1], "qc")
 
+    def test_recover_missing_qc_and_zh_chains_only_one_paper(self):
+        folder = self.seed()
+        zh = (folder/f'{CK}_ZH.md').read_bytes()
+        (folder/f'{CK}_ZH.md').unlink()
+        en = folder/f'{CK}_EN.md'
+        en.write_text(en.read_text(encoding='utf-8').replace('qc: synthetic qc marker\n',''),encoding='utf-8')
+        self.freeze_state()
+        before = self.live_hashes()
+        note_before = (folder/f'{CK}_Note.md').read_bytes()
+        other = self.lib/'papers'/'AlreadyAccepted';other.mkdir()
+        kept = other/'AlreadyAccepted_EN.md';kept.write_bytes(b'accepted user content')
+        def recover(args, logfile, env, **kwargs):
+            self.assertEqual(args[args.index('--only')+1], CK)
+            self.assertEqual(args[args.index('--steps')+1], 'qc,zh')
+            self.assertNotIn('--fresh-source',args)
+            self.assertEqual(self.live_hashes(), before)
+            staged = self.staged(kwargs)
+            text = (staged/en.name).read_text(encoding='utf-8')
+            (staged/en.name).write_text(text.replace('\n---\n','\nqc: synthetic qc marker\n---\n',1),encoding='utf-8')
+            (staged/f'{CK}_ZH.md').write_bytes(zh)
+            return 0
+        self.worker.side_effect = recover
+        result = remedy.remedy(self.client,self.runs,self.run_id,KEY,'recover_paper',confirm=True)
+        self.assertTrue(result['ok'],result)
+        self.assertEqual(kept.read_bytes(),b'accepted user content')
+        self.assertEqual((folder/f'{CK}_Note.md').read_bytes(),note_before)
+        self.assertTrue(remedy.diagnose(self.runs,self.run_id,KEY)['accepted'])
+        self.worker.reset_mock()
+        with self.assertRaises(RuntimeError):
+            remedy.remedy(self.client,self.runs,self.run_id,KEY,'recover_paper',confirm=True)
+        self.worker.assert_not_called()
+
+    def test_recovery_failure_preserves_live_bytes_and_existing_qc_skips_qc(self):
+        folder = self.seed();(folder/f'{CK}_ZH.md').unlink()
+        self.freeze_state();before=self.live_hashes()
+        self.worker.return_value=1
+        result=remedy.remedy(self.client,self.runs,self.run_id,KEY,'recover_paper',confirm=True)
+        self.assertFalse(result['ok'])
+        self.assertEqual(self.live_hashes(),before)
+        args=self.worker.call_args.args[0]
+        self.assertEqual(args[args.index('--steps')+1],'zh')
+
     def test_reparse_requires_explicit_fresh_selection(self):
         _, paper = self.freeze_state()
         with self.assertRaisesRegex(RuntimeError, "显式"):

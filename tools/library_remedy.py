@@ -13,8 +13,8 @@ from library_issues import CATEGORIES, classify_log, classify_qa, classify_reaso
 KEY_RX = re.compile('[A-Z0-9]{8}\\Z')
 LOG_LINES = 60
 LOG_CHARS = 8000
-PUBLISH_SCOPE = {'repair_zh': ('ZH',), 'retranslate_zh': ('ZH',), 'retry_qc': ('EN', 'MD'), 'reparse_source': ('*',), 'migrate_metadata': ('ZH',)}
-WORKER_ACTIONS = {'repair_zh': ('zh',), 'retranslate_zh': ('zh',), 'retry_qc': ('qc',), 'reparse_source': ('folders', 'md', 'qc')}
+PUBLISH_SCOPE = {'repair_zh': ('ZH',), 'retranslate_zh': ('ZH',), 'recover_paper': ('EN', 'MD', 'ZH'), 'retry_qc': ('EN', 'MD'), 'reparse_source': ('*',), 'migrate_metadata': ('ZH',)}
+WORKER_ACTIONS = {'repair_zh': ('zh',), 'retranslate_zh': ('zh',), 'recover_paper': ('qc', 'zh'), 'retry_qc': ('qc',), 'reparse_source': ('folders', 'md', 'qc')}
 ACTION_RX = re.compile('[a-z_]{1,32}\\Z')
 
 def _read(path):
@@ -119,10 +119,12 @@ def _worker_remedies(paper, categories, artifacts):
     names = {row['category'] for row in categories}
     files = artifacts.get('files', [])
     has_full = _fulltext_present(files)
+    missing_zh = 'EN' in files and 'ZH' not in files and _translation_required(paper)
     remedies = []
+    remedies.append({'id': 'recover_paper', 'kind': 'worker', 'roles': ('qc', 'zh'), 'label': '补齐本篇失败步骤（质检 → 缺失中文 → 完整验收；不重新解析 PDF）', 'available': bool(has_full and (not (paper.get('qa') or {}).get('ok')) and (not artifacts.get('qc_marked') or ('EN' in files and 'ZH' not in files))), 'reason': '已有成果完整或没有可恢复的原文'})
     remedies.append({'id': 'repair_zh', 'kind': 'worker', 'roles': ('qc', 'zh'), 'label': '定向修复译文（本地确定性修订优先，必要时仅重译问题单元；隔离候选、验收通过才写入）', 'available': bool(has_full and 'ZH' in files and ('translation' in names)), 'reason': '' if has_full and 'ZH' in files else '需要已有原文与译文'})
-    remedies.append({'id': 'retranslate_zh', 'kind': 'worker', 'roles': ('zh',), 'label': '仅重新翻译中文（从核验过的当前 EN 生成全新 ZH 候选；先完整验收，再备份+原子替换；不重解析 PDF，不动 Note 与你的其它修改）', 'available': bool(has_full and 'EN' in files and _translation_required(paper)), 'reason': '' if has_full and 'EN' in files else '需要英文全文（MD 中文原文无需重译）'})
-    remedies.append({'id': 'retry_qc', 'kind': 'worker', 'roles': ('qc',), 'label': '重跑英文质检（QC）步骤（隔离候选；验收通过才写回原文标记）', 'available': bool(has_full and ('english_qc' in names or 'legacy_format' in names)), 'reason': '' if has_full else '缺少原文全文，先在 Zotero 补齐正本'})
+    remedies.append({'id': 'retranslate_zh', 'kind': 'worker', 'roles': ('zh',), 'label': '仅重新翻译中文（从核验过的当前 EN 生成全新 ZH 候选；先完整验收，再备份+原子替换；不重解析 PDF，不动 Note 与你的其它修改）', 'available': bool(has_full and 'EN' in files and artifacts.get('qc_marked') and _translation_required(paper)), 'reason': '' if has_full and 'EN' in files else '需要英文全文（MD 中文原文无需重译）'})
+    remedies.append({'id': 'retry_qc', 'kind': 'worker', 'roles': ('qc',), 'label': '重跑英文质检（QC）步骤（隔离候选；验收通过才写回原文标记）', 'available': bool(has_full and (not missing_zh) and ('english_qc' in names or 'legacy_format' in names)), 'reason': '本篇还缺中文，请选择“补齐本篇失败步骤”' if missing_zh else '' if has_full else '缺少原文全文，先在 Zotero 补齐正本'})
     remedies.append({'id': 'reparse_source', 'kind': 'worker', 'roles': ('qc', 'zh'), 'explicit_only': True, 'label': '显式重新解析 PDF（MinerU 全新解析，费用高；仅在明确选择后执行）', 'available': bool(paper.get('primary_key') and has_full), 'reason': '' if paper.get('primary_key') else '缺少正本附件记录'})
     return remedies
 
@@ -238,6 +240,21 @@ def _model_config_for(steps):
     summary = '; '.join((f"{role}={config[role]['provider']}/{config[role]['model']}(effort={config[role]['reasoning_effort']})" for role in roles))
     return (config, summary)
 
+def _worker_steps(action, paper, folder):
+    if action != 'recover_paper':
+        return WORKER_ACTIONS[action]
+    steps = []
+    full = next((folder / f"{paper['citekey']}_{suffix}.md" for suffix in ('EN', 'MD') if (folder / f"{paper['citekey']}_{suffix}.md").is_file()), None)
+    if full is None:
+        raise RuntimeError('缺少已有全文；本操作不会重新解析 PDF')
+    if s._fulltext_lacks_qc(full):
+        steps.append('qc')
+    if full.name.endswith('_EN.md') and _translation_required(paper) and (not (folder / f"{paper['citekey']}_ZH.md").is_file()):
+        steps.append('zh')
+    if not steps:
+        raise RuntimeError('没有待补齐步骤；请复查或采纳现有产物')
+    return tuple(steps)
+
 def _stage_folder(runs, paper, folder, action):
     from library_control import new_attempt
     attempt = new_attempt()
@@ -254,7 +271,7 @@ def _stage_folder(runs, paper, folder, action):
     return (attempt, staged_library, staged)
 
 def _dispatch_staged(client, runs, paper, folder, action, family_items):
-    steps = WORKER_ACTIONS[action]
+    steps = _worker_steps(action, paper, folder)
     attempt, staged_library, staged = _stage_folder(runs, paper, folder, action)
     run = Path(runs) / attempt
     run.mkdir(parents=True, exist_ok=False)
@@ -266,9 +283,13 @@ def _dispatch_staged(client, runs, paper, folder, action, family_items):
     logfile = run / (paper['key'] + '.log')
     env = os.environ.copy()
     env.update(PYTHONUTF8='1', QC_PARALLEL='1', ZH_PARALLEL='1', GLM_MAX_CONCURRENCY='2')
+    if action == 'recover_paper':
+        env.setdefault('QC_CHUNK_CHARS', '4000')
     args = ['--only', paper['citekey'], '--snapshot', str(run / 'snapshot.json'), '--steps', ','.join(steps), '--apply', '--api-config', str(run / 'model_config.json'), '--worker-id', 'remedy_' + paper['key']]
     if action == 'reparse_source':
         args += ['--fresh-source', '--retry-failed']
+    elif action == 'recover_paper':
+        args += ['--retry-failed']
     code = s.run_sync(args, logfile, env, library_root=staged_library)
     return (code, logfile, run, staged)
 
@@ -392,10 +413,12 @@ def _worker_remedy(client, runs, run_id, key, action, params, *, confirm):
     state, paper, found_run = _find_paper(runs, run_id, key)
     if not paper.get('primary_key') or not paper.get('primary_pdf'):
         raise RuntimeError('该条目在本任务中没有正本附件记录；请先重新预演或使用复查/暂缓')
-    steps = WORKER_ACTIONS[action]
     folder = _paper_folder(paper['citekey'])
     if folder is None or not folder.is_dir():
         raise RuntimeError('citekey 无效或论文目录不存在')
+    steps = _worker_steps(action, paper, folder)
+    if (paper.get('qa') or {}).get('ok') is True and action == 'recover_paper':
+        raise RuntimeError('本篇已验收；不重复执行模型步骤')
     guard_suffixes = ['EN', 'MD'] if action != 'reparse_source' else []
     if action in ('repair_zh', 'retranslate_zh'):
         guard_suffixes.append('ZH')

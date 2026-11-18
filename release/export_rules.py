@@ -14,7 +14,7 @@ RUNTIME_MODULES = (
     "attachments_audit", "attachments_normalize_prep", "citekey_reformat_prep",
     "claude_client", "codex_client", "common", "fix_latex_spacing", "glm_client",
     "glm_concurrency", "intake_new", "library_control", "library_discovery", "library_intake",
-    "library_issues", "library_remedy", "library_platform",
+    "library_issues", "library_remedy", "library_platform", "library_backend",
     "library_paths", "library_plugin_bridge", "library_power", "library_progress",
     "library_qa", "library_resume", "library_sync", "library_source", "library_refresh", "mineru_client",
     "mineru_credentials", "model_api", "model_catalog", "qc_glm", "report_retention", "sync", "zotero_local",
@@ -29,7 +29,7 @@ RELEASE_FILES = ("README.md", "DISTRIBUTION_LICENSE.md", "AGPL-3.0.txt", "MACOS.
                  "export_rules.py", "dependencies.lock.json", "requirements.txt",
                  "DATA.gitignore", "LIBRARY.gitignore", "THIRD_PARTY_SOURCE_GUIDE.md",
                  "journal_acronyms.base.csv")
-SOURCE_ALLOWLIST = (("LICENSE", "tools/test_library_platform.py", "tools/test_macos_install.py", "tools/macos_acceptance.py", ".github/workflows/macos-beta16.yml", ".github/workflows/beta16-sources.yml") + tuple("tools/" + x + ".py" for x in RUNTIME_MODULES)
+SOURCE_ALLOWLIST = (("LICENSE", "tools/test_library_platform.py", "tools/test_library_backend.py", "tools/test_macos_install.py", "tools/macos_acceptance.py", ".github/workflows/macos-beta16.yml", ".github/workflows/beta16-sources.yml") + tuple("tools/" + x + ".py" for x in RUNTIME_MODULES)
                    + tuple("tools/zotero_library_sync/" + x for x in PLUGIN_FILES)
                    + tuple("tools/zotero_library_sync/tests/" + x for x in PLUGIN_TESTS)
                    + ("tools/notify_library.ps1", "tools/build_zotero_plugin.py",

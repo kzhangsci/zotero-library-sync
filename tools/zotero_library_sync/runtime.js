@@ -138,6 +138,27 @@ LibrarySync = {
       }
     });
   },
+  restartBackend(pid) {
+    const p = this.validatePaths(this.getPaths());
+    if (!Number.isSafeInteger(pid) || pid < 1) throw new LibrarySyncBridge.SafeError('PATH', '无法核验后台 PID，请先重新连接');
+    return new Promise((resolve, reject) => {
+      const file = Cc['@mozilla.org/file/local;1'].createInstance(Ci.nsIFile);
+      file.initWithPath(p.pythonw);
+      const process = Cc['@mozilla.org/process/util;1'].createInstance(Ci.nsIProcess);
+      process.init(file);
+      let settled = false;
+      const timer = setTimeout(() => { if (!settled) { settled = true; reject(new LibrarySyncBridge.SafeError('RESTART', '后台升级尚未确认；请稍后重新连接，未重复启动')); } }, 30000);
+      const observer = { observe(_subject, topic) {
+        if (settled) return;
+        settled = true; clearTimeout(timer);
+        if (topic === 'process-finished' && process.exitValue === 0) resolve();
+        else reject(new LibrarySyncBridge.SafeError('RESTART', '后台未重启：可能仍有任务、预检或身份不匹配。请结束操作后再试，勿终止其他 Python 进程。'));
+      }};
+      const args = [LibrarySyncBridge.joinPath(p.repo, 'tools', 'library_plugin_bridge.py'), '--restart-idle', String(pid), '--apply'];
+      try { process.runwAsync(args, args.length, observer, false); }
+      catch (_) { settled = true; clearTimeout(timer); reject(new LibrarySyncBridge.SafeError('RESTART', '无法启动后台升级检查，请核对程序路径')); }
+    });
+  },
   createClient() {
     const host = this;
     return new LibrarySyncBridge.Client({

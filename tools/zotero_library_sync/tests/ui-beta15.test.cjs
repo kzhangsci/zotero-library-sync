@@ -90,9 +90,33 @@ test("old bridge explains missing diagnosis support instead of failing silently"
   const f = diagnosisFixture(BLOCKED_VIEW(), { capabilities: BETA15_CAPS.filter(c => c !== "diagnosis-v1") });
   const u = ui(f); await u.controller.init();
   await openDiagnosis(u);
-  assert.equal(u.el("diagnosis-section").hidden, true);
+  assert.equal(u.el("diagnosis-section").hidden, false);
+  assert.match(u.el('diagnosis-text').textContent, /重启空闲后台/);
+  assert.equal(u.el('diagnosis-section').scrollOptions.block, 'start');
   assert.match(u.el("message").textContent, /不支持单篇诊断/);
   assert.equal(f.requests.filter(r => r.url.includes("/v1/diagnosis")).length, 0);
+  u.controller.close();
+});
+
+test('long task tables scroll a successful diagnosis into view', async () => {
+  const f=diagnosisFixture(BLOCKED_VIEW(Array.from({length:30},(_,i)=>({key:'ABCDEFG2',citekey:'Sample'+i,accepted:false}))));
+  const u=ui(f);await u.controller.init();await openDiagnosis(u);
+  assert.equal(u.el('diagnosis-section').hidden,false);
+  assert.equal(u.el('diagnosis-section').scrollOptions.block,'start');
+  u.controller.close();
+});
+
+test('idle old backend is replaced and active backend cannot be restarted', async () => {
+  const f=diagnosisFixture(BLOCKED_VIEW(),{capabilities:['history-v1']});
+  const u=ui(f);let restarts=0;
+  u.host.restartBackend=async pid=>{assert.equal(pid, f.manifest.pid);restarts++;f.state.backend={pid:9876,version:'0.2.0-beta.16'};};
+  await u.controller.init();
+  await u.el('restart-backend').emit('click');
+  assert.equal(restarts,1);
+  assert.match(u.el('backend-status').textContent,/0.2.0-beta.16/);
+  f.state.active=true;await u.controller.tick();
+  assert.equal(u.el('restart-backend').disabled,true);
+  await u.controller.restartBackend();assert.equal(restarts,1);
   u.controller.close();
 });
 

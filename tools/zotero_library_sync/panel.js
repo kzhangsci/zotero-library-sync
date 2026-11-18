@@ -694,6 +694,7 @@ var LibrarySyncPanel = (() => {
       this.listen("acronym-save", "click", () => this.saveAcronym());
       this.listen("preview-rows", "change", event => this.changeSelection(event.target));
       this.listen("connect", "click", () => this.connect(true));
+      this.listen("restart-backend", "click", () => this.restartBackend());
       this.listen("save-paths", "click", () => this.savePaths());
       this.listen("select-items", "click", () => this.captureSelection());
       this.listen("discover", "click", () => this.previewScope([]));
@@ -828,6 +829,7 @@ var LibrarySyncPanel = (() => {
       const refreshPreviewReason = this.el("refresh-source").checked ? refreshReason : "";
       const scopeReason = lockReason || readyReason || (!this.statusKnown ? "当前状态读取未成功，请刷新状态" : "") || activeReason;
       this.disable("connect", this.busy ? "正在处理操作" : this.pathsDirty ? "请先保存修改后的路径" : "");
+      this.disable('restart-backend', this.restartReason());
       this.disable("save-paths", lockReason);
       this.disable("select-items", lockReason);
       this.disable("reload-config", lockReason || connectionReason);
@@ -908,6 +910,30 @@ var LibrarySyncPanel = (() => {
       this.busy = true; this.update();
       try { await fn(); } catch (e) { if (!this.closed) this.error(e); }
       finally { this.busy = false; this.update(); }
+    }
+    restartReason() {
+      if (this.busy || this.pending || this.remedyBusy || Object.keys(this.catalogPending).length) return '请等待后台操作完成';
+      if (!this.connected || !this.statusKnown || this.pathsDirty) return '请先连接并核实当前后台';
+      if (this.active) return '任务运行中不能重启后台';
+      if (typeof this.host.restartBackend !== 'function') return '当前宿主不支持后台升级，请更新 XPI';
+      return '';
+    }
+    async restartBackend() {
+      const reason = this.restartReason();
+      if (reason) { this.message(reason, true); return; }
+      let replaced = false;
+      await this.action(async () => {
+        const status = await this.client.getStatus();
+        if (status.active) throw new Bridge.SafeError('RESTART', '任务正在运行，未重启');
+        const pid = status.backend?.pid || this.client.session?.pid;
+        this.message('正在核验并更新空闲后台；旧版未完成的列表查询/连接测试可能取消…');
+        await this.host.restartBackend(pid);
+        this.epoch++; this.client.close(); this.client = this.host.createClient();
+        this.connected = false; this.statusKnown = false; this.capabilities = [];
+        if (this.preview) this.invalidate(); // Preview tokens belonged to the old service.
+        replaced = true;
+      });
+      if (replaced && !this.closed) await this.connect(true);
     }
     async connect(launch) {
       return this.action(async () => {
@@ -1146,6 +1172,10 @@ var LibrarySyncPanel = (() => {
       if (this.closed || epoch !== this.epoch) return;
       this.active = status.active; this.statusKnown = true; this.currentStatus = status;
       if (Array.isArray(status.capabilities)) this.capabilities = status.capabilities;
+      const backend = status.backend;
+      const current = this.capabilities.includes('diagnosis-v1') && this.capabilities.includes('paper-recovery-v1');
+      this.text('backend-status', `插件 ${Bridge.VERSION} · 后台 ${backend?.version || '旧版（未报告版本）'}` +
+        (backend?.disk_changed ? ' · 程序文件已更新，请重启空闲后台' : !current ? ' · 缺少诊断/恢复能力，请更新程序后重启空闲后台' : ' · 诊断与单篇恢复已就绪'));
       this.text("connection", "已连接 127.0.0.1");
       const view = status.view;
       if (this.pauseRun && (view?.id !== this.pauseRun || view?.status === "paused" || view?.terminal === true)) this.pauseRun = null;
@@ -1285,7 +1315,17 @@ var LibrarySyncPanel = (() => {
     showDiagnosis(key) {
       if (this.closed) return;
       const reason = this.diagnosisReason();
-      if (reason) { this.message(reason, true); return; }
+      if (reason) {
+        this.message(reason, true);
+        if (this.connected && !this.capabilities.includes('diagnosis-v1')) {
+          const row = this.displayedStatus?.view?.papers?.find(p => p.key === key);
+          this.text('diagnosis-text', `${row?.citekey || key}\n${row?.note || '后台尚不支持详细诊断'}\n请使用上方“更新 / 重启空闲后台”，连接新版服务后再查看处置选项。\n${this.reportHint(this.displayedStatus?.view?.report || '')}`);
+          this.el('diagnosis-remedies').replaceChildren();
+          this.el('diagnosis-section').hidden = false;
+          this.el('diagnosis-section').scrollIntoView({block:'start'});
+        }
+        return;
+      }
       const runId = this.displayedStatus?.view?.id;
       if (!runId || !Bridge.RUN_ID.test(runId)) { this.message("尚未选定可诊断的任务。", true); return; }
       return this.action(async () => {
@@ -1294,6 +1334,7 @@ var LibrarySyncPanel = (() => {
         this.diagnosis = value;
         this.renderDiagnosis();
         this.el("diagnosis-section").hidden = false;
+        this.el('diagnosis-section').scrollIntoView({block:'start'});
         this.el("diagnosis-title").focus({ preventScroll: true });
       });
     }

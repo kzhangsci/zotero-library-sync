@@ -56,3 +56,11 @@ manifest 契约，安装版 Zotero schema 检查另记录在本地验收报告�
 `python3 tools/build_library_release.py --source-only --macos --apply`。
 macOS 包包含固定哈希的 arm64/x86_64 wheels，要求本机 CPython 3.13，安装时离线创建专用环境。
 原生验收工作流为 `.github/workflows/macos-beta16.yml`；真实系统 Keychain、文件锁和 Zotero 检查在临时数据和测试钥匙串中进行。
+
+## 完整发行与对应源码
+
+上面的普通构建命令用于开发检查。对外提供包含 PyMuPDF/MuPDF 的应用包时，另执行
+`python release/collect_sources.py`，核验并归档锁文件中的九个官方源码包，再执行
+`python tools/build_library_release.py --apply --macos --include-sources`（两平台依赖均需齐备）。
+最终应同时保留、提供 XPI、应用包、同版本 source.zip、third-party-sources.zip、
+SHA256SUMS.txt 及许可材料。构建会拒绝未固定哈希、版本不一致或仍为 bootstrap 的源码附件。

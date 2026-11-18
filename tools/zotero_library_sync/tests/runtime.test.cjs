@@ -25,7 +25,7 @@ function runtime() {
   const classes = {
     "@mozilla.org/addons/addon-manager-startup;1": { getService: () => ({ registerChrome() { counters.registered++; return { destruct() { counters.destroyed++; } }; } }) },
     "@mozilla.org/file/local;1": { createInstance: file },
-    "@mozilla.org/process/util;1": { createInstance: () => ({ init(f) { this.file = f; }, runwAsync(args, n, observer, hold) { counters.launches.push({ path: this.file.path, args, n, observer, hold }); } }) }
+    "@mozilla.org/process/util;1": { createInstance: () => ({ init(f) { this.file = f; }, runwAsync(args, n, observer, hold) { counters.launches.push({ path: this.file.path, args, n, observer, hold }); if(observer && counters.observerExit !== undefined) {this.exitValue=counters.observerExit;queueMicrotask(()=>observer.observe(this,'process-finished'));} } }) }
   };
   class XHR {
     constructor(options) {

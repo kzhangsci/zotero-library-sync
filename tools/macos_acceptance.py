@@ -227,7 +227,11 @@ let panel=await until(()=>Services.wm.getMostRecentWindow('library-sync:panel'))
 await until(()=>panel?.librarySyncReady===true);check('ready',panel?.librarySyncReady===true);
 check('version',panel?.LibrarySyncBridge?.VERSION==='0.2.0-beta.16');
 await phase('bridge');const host=panel.librarySyncController.host;const client=host.createClient();const status=await client.connect(true);
-check('bridge_launch_and_connection',!!status);client.close();panel?.close();}}
+check('bridge_launch_and_connection',!!status);
+await phase('idle_upgrade');await host.restartBackend(status.backend.pid);client.close();
+const replacement=host.createClient();const upgraded=await replacement.connect(true);
+check('idle_backend_restart',upgraded.backend.pid!==status.backend.pid && upgraded.capabilities.includes('paper-recovery-v1'));
+replacement.close();panel?.close();}}
 catch(e){result.failures.push('exception');result.error=String(e.message).slice(0,400);}
 finally{await phase('complete');Services.startup.quit(Ci.nsIAppStartup.eForceQuit);}}
 function shutdown(){} function install(){} function uninstall(){}

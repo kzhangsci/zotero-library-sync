@@ -21,7 +21,9 @@
       <h:p class="hint">程序目录须包含 tools\library_plugin_bridge.py，不是 Zotero 数据或 Obsidian 文献目录。Windows 使用 pythonw.exe，macOS 使用专用环境的 python3 运行后台。只更新 XPI 不会安装这两个组件；已有用户沿用原路径，新用户先安装对应系统的后台包。</h:p>
       <h:div class="actions"><h:div class="action-control"><h:button id="save-paths" type="button">保存路径</h:button><h:small id="save-paths-reason" class="disabled-reason" hidden="hidden"/></h:div>
         </h:div></h:details><h:div class="actions"><h:div class="action-control"><h:button id="connect" type="button">连接 / 启动服务</h:button><h:small id="connect-reason" class="disabled-reason" hidden="hidden"/></h:div><h:span id="connection">尚未连接</h:span></h:div>
-      <h:p class="hint">仅保存这两个路径。启动服务不会开始同步；确认已有服务可用时直接复用。</h:p>
+      <h:p id="backend-status" class="hint" role="status">连接后显示插件与后台版本。</h:p>
+      <h:div class="action-control"><h:button id="restart-backend" type="button">更新 / 重启空闲后台</h:button><h:small id="restart-backend-reason" class="disabled-reason" hidden="hidden"/></h:div>
+      <h:p class="hint">启动服务不会开始同步。更新程序后可重启空闲后台；任务运行时禁止重启。旧版未完成的模型列表查询或连接测试可能取消，文献恢复记录保留。</h:p>
     </h:section>
     <h:section id="sync-page" aria-labelledby="scope-title">
       <h:h2 id="scope-title">文献范围与预演</h:h2>

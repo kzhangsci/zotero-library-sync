@@ -31,7 +31,7 @@ jobs:
       - name: Backend regression
         env:
           PYTHONPATH: tools
-        run: python -B -m unittest test_library_platform test_macos_install test_library_qa test_library_issues test_library_remedy
+        run: python -B -m unittest test_library_platform test_library_backend test_macos_install test_library_qa test_library_issues test_library_remedy
       - name: Frontend regression
         run: node --test tools/zotero_library_sync/tests/*.test.cjs
       - name: Build bootstrap package
