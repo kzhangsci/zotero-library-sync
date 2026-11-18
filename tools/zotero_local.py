@@ -1,4 +1,4 @@
-# Library Sync standalone export; LicensePending. See release/BUILD.md.
+# Library Sync standalone export; Original source MIT; bundled distribution AGPL. See release/DISTRIBUTION_LICENSE.md.
 from __future__ import annotations
 import argparse
 import copy
@@ -118,6 +118,10 @@ def _item(value, key=None):
 def _atomic_bytes(path, data):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    from library_platform import IS_MAC, REFERENCE_PREFIX, discard_keychain_reference
+    protected = IS_MAC and data.startswith(REFERENCE_PREFIX)
+    previous = path.read_bytes() if protected and path.is_file() else None
+    committed = False
     fd, temporary = tempfile.mkstemp(prefix=path.name + '.', dir=path.parent)
     try:
         with os.fdopen(fd, 'wb') as stream:
@@ -125,9 +129,15 @@ def _atomic_bytes(path, data):
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, path)
+        committed = True
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)
+        if protected:
+            try:
+                discard_keychain_reference(previous if committed else data)
+            except Exception:
+                pass
 
 def _save_journal(path, state):
     _atomic_bytes(path, json.dumps(state, ensure_ascii=False, indent=2).encode('utf-8'))
@@ -161,7 +171,10 @@ def _operation_lock(path):
 
 def _dpapi(data, *, decrypt=False):
     if os.name != 'nt':
-        raise LocalAPIError('Persistent Zotero authorization requires Windows DPAPI.')
+        from library_platform import IS_MAC, keychain_protect
+        if not IS_MAC:
+            raise LocalAPIError('Unsupported credential platform')
+        return keychain_protect(data, decrypt=decrypt)
     from ctypes import wintypes
 
     class Blob(ctypes.Structure):
@@ -192,7 +205,8 @@ class DPAPIKeyStore:
 
     def _path(self, server_id):
         digest = hashlib.sha256(server_id.encode()).hexdigest()
-        return self.root / f'zotero-local-{digest}.dpapi'
+        from library_platform import secret_suffix
+        return self.root / (f'zotero-local-{digest}' + secret_suffix())
 
     def load(self, server_id):
         path = self._path(server_id)

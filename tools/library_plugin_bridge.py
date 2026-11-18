@@ -1,4 +1,4 @@
-# Library Sync standalone export; LicensePending. See release/BUILD.md.
+# Library Sync standalone export; Original source MIT; bundled distribution AGPL. See release/DISTRIBUTION_LICENSE.md.
 from __future__ import annotations
 import argparse
 import concurrent.futures
@@ -718,6 +718,14 @@ class Handler(BaseHTTPRequestHandler):
 
 def write_private_manifest(path, value):
     path.parent.mkdir(parents=True, exist_ok=True)
+    if sys.platform == 'darwin':
+        if path.parent.is_symlink() or path.parent.stat().st_uid != os.getuid():
+            raise RuntimeError('桥接凭据目录的所有权无效')
+        os.chmod(path.parent, 448)
+        from zotero_local import _atomic_bytes
+        _atomic_bytes(path, json.dumps(value).encode('utf-8'))
+        os.chmod(path, 384)
+        return
     identity = subprocess.run(['whoami.exe', '/user', '/fo', 'csv', '/nh'], capture_output=True, timeout=10, creationflags=subprocess.CREATE_NO_WINDOW)
     sids = re.findall(b'S-1-5(?:-\\d+)+', identity.stdout)
     if identity.returncode or len(sids) != 1:
@@ -737,8 +745,8 @@ def write_private_manifest(path, value):
             os.unlink(temporary)
 
 def serve():
-    if os.name != 'nt':
-        raise RuntimeError('此版本仅支持 Windows')
+    if os.name != 'nt' and sys.platform != 'darwin':
+        raise RuntimeError('此版本支持 Windows 和 macOS')
     lock = FileLock(workflow.RUNS / 'plugin_bridge.lock')
     try:
         lock.acquire(timeout=0)

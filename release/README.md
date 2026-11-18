@@ -1,6 +1,8 @@
 # Library Sync · Zotero 文献同步
 
-Windows x64 上的 Zotero 10.0 插件。选中文献或检测任意分类中的新增条目，预演后在后台整理正本和批注本、解析 PDF、质检，并按需生成段落对照的中文译文。任务页显示验收、索引与本地 Git 提交进度。
+支持 Windows x64，并新增 macOS 13+（Apple Silicon / Intel）候选支持的 Zotero 10.0 插件。macOS 安装方式和实际验收范围见 [macOS 指南](MACOS.md)。选中文献或检测任意分类中的新增条目，预演后在后台整理正本和批注本、解析 PDF、质检，并按需生成段落对照的中文译文。任务页显示验收、索引与本地 Git 提交进度。
+
+**beta.16 更新**：保留 PyMuPDF 和 MinerU；新增 macOS 路径/启动、Keychain 凭据、进程身份、任务锁、内容快照提交和离线安装入口。自有代码采用 MIT，包含 PyMuPDF/MuPDF 的组合发行遵守 AGPL，见 [发行许可说明](DISTRIBUTION_LICENSE.md)。macOS 功能以实际验收范围为准。
 
 **beta.15 更新**：混合失败的批次也能安全暂停——已有验收、已暂停与未通过验收的文献在同一张暂停凭据里各自留证，恢复只补健康子集的缺失步骤，失败文献进入“待处理清单”而不阻塞、也不被伪装成已通过；历史遗留的“请求过暂停但未生成凭据”受阻任务提供证据核验式恢复（只读核验后启动新子任务，原记录不改动）。恢复前可预览“原任务冻结模型 vs 当前已保存模型”并显式选择，默认沿用冻结配置，选择后若保存的配置再变化则拒绝执行。任务页每篇文献新增“详情”：错误码中文释义、失败阶段、文件/单元证据、日志尾部、问题台账状态与可用处置。处置动作先预览再确认（一次性令牌绑定文献字节、模型配置与身份，变化须重新预览），模型类动作全部在隔离候选目录执行并完整验收，通过才逐文件发布并可回滚；“仅重新翻译中文”从核验过的当前 EN 生成全新 ZH 候选，不重解析 PDF。新增随包公共期刊缩写基础表（常见海洋/地学期刊的文件名/引用键短码，非 ISO 4 缩写），个人覆盖表优先；未知期刊在预演中可直接补表保存。三个月报告清理不会删除活跃恢复证据、未决问题台账或排除偏好。
 
@@ -8,14 +10,14 @@ Windows x64 上的 Zotero 10.0 插件。选中文献或检测任意分类中的�
 
 ## 下载和安装
 
-从 [GitHub Releases](https://github.com/kzhangsci/zotero-library-sync/releases/tag/v0.2.0-beta.15) 下载 beta.15 XPI，在 Zotero 的插件管理器中从文件安装。新安装还需要 Windows 后台包。已有用户应等当前任务结束后更新插件，并重启空闲后台服务以加载后台修复。以下命令可用源码和官方依赖生成完整安装包。准备 Windows x64、Python 3.12 或以上、Git、Zotero 和 Better BibTeX，在下载并解压的源码根目录运行：
+从 [GitHub Releases](https://github.com/kzhangsci/zotero-library-sync/releases) 下载对应版本 XPI（本地 beta.16 候选产物位于 release/dist），在 Zotero 的插件管理器中从文件安装。新安装还需要 Windows 后台包。已有用户应等当前任务结束后更新插件，并重启空闲后台服务以加载后台修复。以下命令可用源码和官方依赖生成完整安装包。准备 Windows x64、Python 3.12 或以上、Git、Zotero 和 Better BibTeX，在下载并解压的源码根目录运行：
 
 ```powershell
 py -3 -B release/fetch_dependencies.py --apply
 py -3 -B tools/build_library_release.py --apply
 ```
 
-生成的 Windows ZIP 位于 `release/dist`。第三方运行时由构建者从上游下载，构建器逐项校验锁文件中的 SHA-256。GitHub Release 提供插件、源码和 Windows 后台包。项目尚未指定开源许可证。
+生成的 Windows ZIP 位于 `release/dist`。第三方运行时由构建者从上游下载，构建器逐项校验锁文件中的 SHA-256。GitHub Release 提供插件、源码和 Windows 后台包。自有源码采用 MIT；集成 PyMuPDF/MuPDF 的组合发行遵守 AGPL。第三方许可与对应源码义务见发行许可说明。
 
 ## 配置 Windows 后台
 

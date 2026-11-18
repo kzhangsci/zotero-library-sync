@@ -1,9 +1,10 @@
-# Library Sync standalone export; LicensePending. See release/BUILD.md.
+# Library Sync standalone export; Original source MIT; bundled distribution AGPL. See release/DISTRIBUTION_LICENSE.md.
 from __future__ import annotations
 from dataclasses import dataclass
 import datetime as dt
 import json
 import os
+import sys
 from pathlib import Path
 from typing import Mapping
 REPO = Path(__file__).resolve().parents[1]
@@ -46,7 +47,7 @@ def get_paths(*, repo: Path | None=None, environ: Mapping[str, str] | None=None)
     home = Path.home()
     portable = (root / 'RELEASE.json').is_file() or not LEGACY_DEFAULTS
     configured_home = env.get('LIBRARY_SYNC_HOME', '').strip()
-    default_data = _path(configured_home, root) if configured_home else Path(env.get('LOCALAPPDATA') or home / '.local' / 'share') / 'LibrarySync' / 'data' if portable else root
+    default_data = _path(configured_home, root) if configured_home else (home / 'Library' / 'Application Support' / 'LibrarySync' / 'data' if sys.platform == 'darwin' else Path(env.get('LOCALAPPDATA') or home / '.local' / 'share') / 'LibrarySync' / 'data') if portable else root
     explicit = env.get('LIBRARY_SYNC_CONFIG', '').strip()
     config = _path(explicit, root) if explicit else root / 'library-sync.json'
     if not explicit and (not config.is_file()):

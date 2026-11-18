@@ -19,6 +19,18 @@ LibrarySync = {
   getPaths() {
     let repo = Zotero.Prefs.get("extensions.library-sync.repo", true) || "";
     let pythonw = Zotero.Prefs.get("extensions.library-sync.pythonw", true) || "";
+    if (Services.appinfo?.OS === "Darwin") {
+      if (!repo && !pythonw) {
+        const home = Services.dirsvc.get("Home", Ci.nsIFile).path;
+        const candidate = home + "/Library/Application Support/LibrarySync/app";
+        const executable = candidate + "/runtime/bin/python3";
+        if (this.localFile(candidate + "/tools/library_plugin_bridge.py") && this.localFile(executable)) {
+          repo = candidate; pythonw = executable;
+        }
+      }
+      if (!pythonw && repo && this.localFile(repo + "/runtime/bin/python3")) pythonw = repo + "/runtime/bin/python3";
+      return {repo, pythonw};
+    }
     if (!repo && !pythonw) {
       // Directory service does not inspect Zotero profiles or application secrets.
       try {
@@ -35,11 +47,11 @@ LibrarySync = {
   },
   validatePaths(value) {
     const p = LibrarySyncBridge.paths(value);
-    if (!this.localFile(p.repo + "\\tools\\library_plugin_bridge.py")) {
-      throw new LibrarySyncBridge.SafeError("PATH", "后台程序目录中没有 tools\\library_plugin_bridge.py。这里应填写同步程序目录，不是 Zotero 或 Obsidian 文献目录；只安装 XPI 不会安装后台程序。已有用户请使用原程序目录，新用户先安装 Windows 后台包。");
+    if (!this.localFile(LibrarySyncBridge.joinPath(p.repo, "tools", "library_plugin_bridge.py"))) {
+      throw new LibrarySyncBridge.SafeError("PATH", "后台程序目录中没有 tools\\library_plugin_bridge.py。这里应填写同步程序目录，不是 Zotero 或 Obsidian 文献目录；只安装 XPI 不会安装后台程序。已有用户请使用原程序目录，新用户先安装对应系统的后台包。");
     }
     if (!this.localFile(p.pythonw)) {
-      throw new LibrarySyncBridge.SafeError("PATH", "未找到 pythonw.exe。请填写已有 Python 的 pythonw.exe 完整路径，或完成 Windows 后台包安装。已保存的模型和 Key 不需要重填。");
+      throw new LibrarySyncBridge.SafeError("PATH", "未找到 Python 程序。请填写 Windows 的 pythonw.exe 或 macOS 专用环境的 python3 路径，或先完成后台安装。已保存的模型和 Key 不需要重填。");
     }
     return p;
   },
@@ -133,9 +145,9 @@ LibrarySync = {
         // The public installation config chooses the descriptor's data root.
         // Keep this adapter for older clients which still derive repo/.secrets.
         const p = LibrarySyncBridge.paths(host.getPaths());
-        const legacy = p.repo + "\\.secrets\\plugin_bridge.json";
+        const legacy = LibrarySyncBridge.joinPath(p.repo, ".secrets", "plugin_bridge.json");
         if (path === legacy) {
-          const configPath = p.repo + "\\library-sync.json";
+          const configPath = LibrarySyncBridge.joinPath(p.repo, "library-sync.json");
           if (await IOUtils.exists(configPath)) {
             const info = await IOUtils.stat(configPath);
             if (info.size > 16384) throw new Error("Installation config size rejected");
@@ -145,7 +157,7 @@ LibrarySync = {
             }
             // setup writes absolute local paths. Reject traversal/UNC/commands.
             const data = LibrarySyncBridge.paths({ repo: config.data_dir, pythonw: p.pythonw }).repo;
-            path = data + "\\.secrets\\plugin_bridge.json";
+            path = LibrarySyncBridge.joinPath(data, ".secrets", "plugin_bridge.json");
           }
         }
         if (!await IOUtils.exists(path)) throw { code: "MISSING" };
@@ -156,10 +168,10 @@ LibrarySync = {
       request: (url, options) => this.requestLoopback(url, options),
       launch(executable, args) {
         // nsIProcess.runwAsync uses an argument array, never cmd/PowerShell/a shell.
-        host.validatePaths({ repo: args[0].replace(/\\tools\\library_plugin_bridge\.py$/, ""), pythonw: executable });
+        host.validatePaths({ repo: args[0].replace(/[\\/]tools[\\/]library_plugin_bridge\.py$/, ""), pythonw: executable });
         const file = Cc["@mozilla.org/file/local;1"].createInstance(Ci.nsIFile);
         file.initWithPath(executable);
-        if (!file.exists() || !file.isFile() || file.leafName.toLowerCase() !== "pythonw.exe") {
+        if (!file.exists() || !file.isFile() || !(/^(?:pythonw\.exe|python(?:3(?:\.13)?)?)$/i.test(file.leafName))) {
           throw new Error("Pythonw unavailable");
         }
         const script = Cc["@mozilla.org/file/local;1"].createInstance(Ci.nsIFile);
@@ -273,7 +285,7 @@ LibrarySync = {
     }
     let dialog = null;
     try {
-      dialog = window.openDialog("chrome://library-sync/content/panel.xhtml?v=0.2.0-beta.15", "library-sync-panel",
+      dialog = window.openDialog("chrome://library-sync/content/panel.xhtml?v=0.2.0-beta.16", "library-sync-panel",
         "chrome,centerscreen,resizable,dialog=no,width=1120,height=820", { host: this, selected });
     } catch (_) { dialog = null; }
     if (!dialog || typeof dialog.addEventListener !== "function" || dialog.closed) {

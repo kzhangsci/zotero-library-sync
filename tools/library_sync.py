@@ -1,4 +1,4 @@
-# Library Sync standalone export; LicensePending. See release/BUILD.md.
+# Library Sync standalone export; Original source MIT; bundled distribution AGPL. See release/DISTRIBUTION_LICENSE.md.
 from __future__ import annotations
 import argparse
 import concurrent.futures as cf
@@ -121,7 +121,12 @@ def dirty_paths(repo):
 @contextlib.contextmanager
 def guarded_file(path, *, writable=False, create=False, movable=False, delete_on_close=False):
     if os.name != 'nt':
-        raise RuntimeError('Automatic publication/commit requires Windows file sharing guards')
+        from library_platform import IS_MAC, posix_guard
+        if not IS_MAC:
+            raise RuntimeError('Unsupported operating system')
+        with posix_guard(path, writable=writable, create=create, delete_on_close=delete_on_close) as stream:
+            yield stream
+        return
     import ctypes
     from ctypes import wintypes
     import msvcrt
@@ -165,6 +170,9 @@ def freeze_files(expected):
         assert_hashes(expected, 'QA/frozen input')
 
 def scoped_commit(repo, paths, message, baseline_dirty=(), *, expected_hashes=None, guard=None):
+    if os.name != 'nt':
+        from library_platform import posix_commit
+        return posix_commit(repo, paths, message, baseline_dirty, expected_hashes=expected_hashes, guard=guard)
     if git(repo, 'diff', '--cached', '--name-only', '-z'):
         raise RuntimeError('Git index contains pre-existing staged work; commit stopped without changing it')
     changed = dirty_paths(repo)
@@ -196,6 +204,13 @@ def scoped_commit(repo, paths, message, baseline_dirty=(), *, expected_hashes=No
 
 @contextlib.contextmanager
 def workflow_lock(path=None):
+    if os.name != 'nt':
+        from library_platform import IS_MAC, posix_lock
+        if not IS_MAC:
+            raise RuntimeError('Unsupported operating system')
+        with posix_lock(path or RUNS / 'workflow.lock'):
+            yield
+        return
     import msvcrt
     path = Path(path or RUNS / 'workflow.lock')
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -215,6 +230,11 @@ def workflow_lock(path=None):
             msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
 
 def active_workers():
+    if os.name != 'nt':
+        from library_platform import IS_MAC, mac_workers
+        if not IS_MAC:
+            raise RuntimeError('Unsupported operating system')
+        return mac_workers()
     command = '@(Get-CimInstance Win32_Process -Filter "Name=\'python.exe\' OR Name=\'pythonw.exe\'" -ErrorAction Stop | Where-Object { $_.CommandLine -match \'(^|[\\\\/\\s"])(sync|sync_runner|intake_new)\\.py([\\s"]|$)\' } | Select-Object ProcessId,CommandLine) | ConvertTo-Json -Compress'
     result = subprocess.run(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', command], capture_output=True, encoding='utf-8', errors='replace', timeout=25, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
     if result.returncode:

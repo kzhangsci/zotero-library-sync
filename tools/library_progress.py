@@ -1,4 +1,4 @@
-# Library Sync standalone export; LicensePending. See release/BUILD.md.
+# Library Sync standalone export; Original source MIT; bundled distribution AGPL. See release/DISTRIBUTION_LICENSE.md.
 from __future__ import annotations
 import ctypes
 from ctypes import wintypes
@@ -37,7 +37,10 @@ def process_identity(pid):
     if type(pid) is not int or not 0 < pid <= 4294967295:
         raise ValueError('PID 必须为正的 DWORD 整数')
     if os.name != 'nt':
-        raise NotImplementedError('进程身份核验需要 Windows')
+        from library_platform import IS_MAC, mac_identity
+        if not IS_MAC:
+            raise NotImplementedError('Unsupported operating system')
+        return mac_identity(pid)
     kernel = _kernel32()
     handle = kernel.OpenProcess(4096 | 1048576, False, pid)
     if not handle:
@@ -72,14 +75,14 @@ def process_identity(pid):
         kernel.CloseHandle(handle)
 
 def _validate_owner(owner):
-    if not isinstance(owner, dict) or type(owner.get('pid')) is not int or (not 0 < owner['pid'] <= 4294967295) or (not isinstance(owner.get('created'), str)) or (not owner['created']) or (not isinstance(owner.get('exe'), str)) or (not ntpath.isabs(owner['exe'])) or any((ord(c) < 32 for c in owner['exe'])):
+    if not isinstance(owner, dict) or type(owner.get('pid')) is not int or (not 0 < owner['pid'] <= 4294967295) or (not isinstance(owner.get('created'), str)) or (not owner['created']) or (not isinstance(owner.get('exe'), str)) or (not (ntpath.isabs(owner['exe']) or os.path.isabs(owner['exe']))) or any((ord(c) < 32 for c in owner['exe'])):
         raise ProgressError('控制器身份记录损坏；需要检查')
     return owner
 
 def owner_matches(owner):
     _validate_owner(owner)
     current = process_identity(owner['pid'])
-    return bool(current and current['pid'] == owner['pid'] and (current['created'] == owner['created']) and (ntpath.normcase(ntpath.normpath(current['exe'])) == ntpath.normcase(ntpath.normpath(owner['exe']))))
+    return bool(current and current['pid'] == owner['pid'] and (current['created'] == owner['created']) and (os.path.normpath(current['exe']) == os.path.normpath(owner['exe']) if os.name != 'nt' else ntpath.normcase(ntpath.normpath(current['exe'])) == ntpath.normcase(ntpath.normpath(owner['exe']))))
 
 def _run_id(value):
     if not isinstance(value, str) or not RUN_ID.fullmatch(value):

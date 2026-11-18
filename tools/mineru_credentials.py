@@ -1,10 +1,11 @@
-# Library Sync standalone export; LicensePending. See release/BUILD.md.
+# Library Sync standalone export; Original source MIT; bundled distribution AGPL. See release/DISTRIBUTION_LICENSE.md.
 from __future__ import annotations
 import os
 from pathlib import Path
+from library_platform import secret_suffix
 from library_paths import DATA, SECRETS
 DEFAULT_ROOT = DATA
-DEFAULT_PATH = SECRETS / 'mineru_api.dpapi'
+DEFAULT_PATH = SECRETS / ('mineru_api' + secret_suffix())
 MAX_TOKEN_LENGTH = 4096
 MAX_FILE_BYTES = 64 * 1024
 
@@ -50,7 +51,7 @@ def _path(path, root):
             raise ValueError
         if path is not None:
             return Path(path)
-        return DEFAULT_PATH if root is None else Path(root) / '.secrets' / 'mineru_api.dpapi'
+        return DEFAULT_PATH if root is None else Path(root) / '.secrets' / ('mineru_api' + secret_suffix())
     except Exception:
         pass
     raise CredentialError()

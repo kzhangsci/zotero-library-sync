@@ -14,7 +14,7 @@ RUNTIME_MODULES = (
     "attachments_audit", "attachments_normalize_prep", "citekey_reformat_prep",
     "claude_client", "codex_client", "common", "fix_latex_spacing", "glm_client",
     "glm_concurrency", "intake_new", "library_control", "library_discovery", "library_intake",
-    "library_issues", "library_remedy",
+    "library_issues", "library_remedy", "library_platform",
     "library_paths", "library_plugin_bridge", "library_power", "library_progress",
     "library_qa", "library_resume", "library_sync", "library_source", "library_refresh", "mineru_client",
     "mineru_credentials", "model_api", "model_catalog", "qc_glm", "report_retention", "sync", "zotero_local",
@@ -22,12 +22,14 @@ RUNTIME_MODULES = (
 PLUGIN_FILES = ("bootstrap.js", "bridge-client.js", "manifest.json", "panel.css", "panel.js",
                 "panel.xhtml", "picker.js", "prefs.js", "runtime.js")
 PLUGIN_TESTS = ("helpers.cjs", "ui.test.cjs", "ui-beta15.test.cjs", "picker.test.cjs", "protocol.test.cjs", "runtime.test.cjs", "model-parameters.test.cjs", "source-refresh.test.cjs", "model-catalog.test.cjs", "tongji.test.cjs", "model-switch.test.cjs", "zcode-plan.test.cjs")
-RELEASE_FILES = ("README.md", "LICENSE_PENDING.md", "PRIVACY.md", "BUILD.md", "CHANGELOG.md",
+RELEASE_FILES = ("README.md", "DISTRIBUTION_LICENSE.md", "AGPL-3.0.txt", "MACOS.md",
+                 "install_macos.py", "setup-macos.command", "fetch_macos_dependencies.py",
+                 "dependencies.macos.lock.json", "requirements-macos.lock", "PRIVACY.md", "BUILD.md", "CHANGELOG.md",
                  "setup.ps1", "install.py", "offline_smoke.py", "fetch_dependencies.py",
                  "export_rules.py", "dependencies.lock.json", "requirements.txt",
                  "DATA.gitignore", "LIBRARY.gitignore", "THIRD_PARTY_SOURCE_GUIDE.md",
                  "journal_acronyms.base.csv")
-SOURCE_ALLOWLIST = (tuple("tools/" + x + ".py" for x in RUNTIME_MODULES)
+SOURCE_ALLOWLIST = (("LICENSE", "tools/test_library_platform.py", "tools/test_macos_install.py", "tools/macos_acceptance.py", ".github/workflows/macos-beta16.yml") + tuple("tools/" + x + ".py" for x in RUNTIME_MODULES)
                    + tuple("tools/zotero_library_sync/" + x for x in PLUGIN_FILES)
                    + tuple("tools/zotero_library_sync/tests/" + x for x in PLUGIN_TESTS)
                    + ("tools/notify_library.ps1", "tools/build_zotero_plugin.py",
@@ -100,7 +102,7 @@ def portable_python(name, text):
         tree.body.insert(index, ast.parse("import library_paths as _release_paths").body[0])
     tree = StripNarrative().visit(tree)
     ast.fix_missing_locations(tree)
-    return '# Library Sync standalone export; LicensePending. See release/BUILD.md.\n' + ast.unparse(tree) + '\n'
+    return '# Library Sync standalone export; Original source MIT; bundled distribution AGPL. See release/DISTRIBUTION_LICENSE.md.\n' + ast.unparse(tree) + '\n'
 
 
 def private_markers(repo):
@@ -158,12 +160,12 @@ def export_sources(repo):
                            "sha256": hashlib.sha256(content).hexdigest(), "bytes": len(content),
                            "transformed": raw != content})
     result["README.md"] = result["release/README.md"]
-    for document in ("BUILD.md", "PRIVACY.md", "LICENSE_PENDING.md", "BBT_SETUP.md", "THIRD_PARTY_SOURCE_GUIDE.md"):
+    for document in ("BUILD.md", "PRIVACY.md", "DISTRIBUTION_LICENSE.md", "MACOS.md", "BBT_SETUP.md", "THIRD_PARTY_SOURCE_GUIDE.md"):
         result["README.md"] = result["README.md"].replace(f"]({document})".encode(), f"](release/{document})".encode())
     result["NOT_PUBLISHED"] = b"NOT_PUBLISHED\nLocal review artifacts only. No remote or public repository has been created.\n"
-    result["LICENSE_PENDING"] = b"LicensePending\nNo project open-source license has been selected. Do not infer MIT.\n"
     result["RELEASE.json"] = json.dumps({"version": plugin_version, "status": "public-beta",
-        "license": "LicensePending", "platform": "windows-x86_64", "portable_defaults": True,
+        "license": "MIT", "distribution_license": "AGPL-3.0-only",
+        "platform": "windows-x86_64; macos-arm64/x86_64-experimental", "portable_defaults": True,
         "git": "system Git required; explicit installation setup", "real_sync_verified": False}, indent=2).encode() + b"\n"
     result["SOURCE_MANIFEST.json"] = json.dumps({"schema_version": 1, "export": "explicit-allowlist",
         "git_history_included": False, "files": provenance}, indent=2).encode() + b"\n"

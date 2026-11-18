@@ -5,7 +5,7 @@
 发送给用户所选模型服务。相关授权、数据使用条件及费用由用户服务账户承担。
 
 Zotero 本地 API、解析和模型密钥在首次运行时由用户授权/输入。Windows 当前用户
-DPAPI 加密文件保存在配置的 `data/.secrets`；连接描述符也在该目录并受用户 ACL
+DPAPI 加密文件保存在配置的 `data/.secrets`；macOS 的密钥存于系统 Keychain，`.keychain` 文件仅记录随机引用；连接描述符也在该目录并受用户 ACL
 限制。不要发布该目录。DPAPI 文件不能视为可跨用户/跨机器复制的明文凭据备份。
 网络诊断不要附上 token、Authorization、模型请求正文或真实文献内容。
 

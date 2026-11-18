@@ -20,7 +20,7 @@ function runtime() {
       return dialog;
     },
     alert(message) { counters.alerts = (counters.alerts || []); counters.alerts.push(String(message)); } };
-  const file = () => ({ initWithPath(p) { this.path = p; this.leafName = p.split("\\").at(-1); },
+  const file = () => ({ initWithPath(p) { this.path = p; this.leafName = p.split(/[\\/]/).at(-1); },
     exists() { return !counters.missing.has(this.path); }, isFile() { return !counters.directories.has(this.path); } });
   const classes = {
     "@mozilla.org/addons/addon-manager-startup;1": { getService: () => ({ registerChrome() { counters.registered++; return { destruct() { counters.destroyed++; } }; } }) },
@@ -119,7 +119,7 @@ test("explicit existing paths stay authoritative and a missing executable is nev
 test("missing backend script or pythonw blocks saving and launching without replacing preferences", async () => {
   const r = runtime(); await r.context.startup({ rootURI: "chrome://test/" });
   const client = r.context.LibrarySync.createClient();
-  for (const [absent, message] of [[PATHS.repo + "\\tools\\library_plugin_bridge.py", "后台程序目录"], [PATHS.pythonw, "未找到 pythonw.exe"]]) {
+  for (const [absent, message] of [[PATHS.repo + "\\tools\\library_plugin_bridge.py", "后台程序目录"], [PATHS.pythonw, "未找到 Python 程序"]]) {
     r.counters.missing.clear(); r.counters.missing.add(absent);
     assert.throws(() => r.context.LibrarySync.setPaths(PATHS), e => e.code === "PATH" && e.message.includes(message));
     await assert.rejects(async () => client.io.launch(PATHS.pythonw, [PATHS.repo + "\\tools\\library_plugin_bridge.py", "--serve", "--apply"]), e => e.code === "PATH" && e.message.includes(message));
@@ -331,5 +331,32 @@ test("official references only open a fixed URL in the system browser", async ()
   r.context.LibrarySync.openPanel(r.win, false);
   const manifest = JSON.parse(fs.readFileSync(path.join(ROOT, "manifest.json"), "utf8"));
   assert.equal(new URL(r.counters.dialog.url).searchParams.get("v"), manifest.version);
+  r.context.shutdown();
+});
+
+for (const value of [
+  {repo:'/Users/Synthetic/Library Sync/app',pythonw:'/Users/Synthetic/Library Sync/app/runtime/bin/python3'},
+  {repo:'/Users/Synthetic/中文程序/app',pythonw:'/Users/Synthetic/中文程序/app/runtime/bin/python3.13'}
+]) {
+  test('macOS accepts argument-array paths '+value.pythonw.split('/').at(-1), async()=>{
+    const r=runtime();r.context.Services.appinfo={OS:'Darwin'};
+    r.context.Zotero.Prefs.get=key=>key.endsWith('.repo')?value.repo:value.pythonw;
+    await r.context.startup({rootURI:'chrome://test/'});
+    const client=r.context.LibrarySync.createClient();
+    client.io.launch(value.pythonw,[value.repo+'/tools/library_plugin_bridge.py','--serve','--apply']);
+    assert.equal(r.counters.launches[0].path,value.pythonw);
+    assert.equal(r.counters.launches[0].args[0],value.repo+'/tools/library_plugin_bridge.py');
+    r.context.shutdown();
+  });
+}
+
+test('macOS path validation rejects traversal and command strings',async()=>{
+  const r=runtime();await r.context.startup({rootURI:'chrome://test/'});
+  const bridge=r.context.LibrarySyncBridge;
+  for (const repo of ['/Users/Synthetic/../Other','relative/path','//server/share','/Users/Synthetic/\napp']) {
+    assert.throws(()=>bridge.paths({repo,pythonw:'/usr/local/bin/python3'}),{code:'PATH'});
+  }
+  assert.throws(()=>bridge.paths({repo:'/Users/Synthetic/app',pythonw:'python3 -c evil'}),{code:'PATH'});
+  assert.equal(bridge.joinPath('/Users/Synthetic/app','.secrets','plugin_bridge.json'),'/Users/Synthetic/app/.secrets/plugin_bridge.json');
   r.context.shutdown();
 });

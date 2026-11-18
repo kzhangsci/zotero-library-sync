@@ -1,4 +1,4 @@
-# Library Sync standalone export; LicensePending. See release/BUILD.md.
+# Library Sync standalone export; Original source MIT; bundled distribution AGPL. See release/DISTRIBUTION_LICENSE.md.
 from __future__ import annotations
 import copy
 import ipaddress
@@ -11,6 +11,7 @@ import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from library_platform import secret_suffix
 from types import MappingProxyType
 from urllib.parse import urlsplit, urlunsplit
 import requests
@@ -20,7 +21,7 @@ import model_catalog
 from glm_concurrency import FileLock, glm_slot
 from zotero_local import _atomic_bytes, _dpapi
 from library_paths import REPO, SECRETS
-DEFAULT_CONFIG = SECRETS / 'model_api.dpapi'
+DEFAULT_CONFIG = SECRETS / ('model_api' + secret_suffix())
 ENDPOINTS = MappingProxyType({'glm': 'https://open.bigmodel.cn/api/paas/v4/chat/completions', 'deepseek': 'https://api.deepseek.com/chat/completions', 'tongji': 'https://agi.tongji.edu.cn/v1/chat/completions'})
 MODEL_ENDPOINTS = MappingProxyType({'deepseek': 'https://api.deepseek.com/models', 'tongji': 'https://agi.tongji.edu.cn/v1/models'})
 TONGJI_HOSTS = frozenset({'agi.tongji.edu.cn', 'llmapi.tongji.edu.cn'})

@@ -70,7 +70,7 @@ def git_command(path, *args, cwd=None):
 def git_prerequisite(library, git_path=None, init_git=False, user_name=None, user_email=None):
     candidate = str(git_path) if git_path else shutil.which("git")
     if not candidate:
-        raise ValueError("System Git is required. Install official Git for Windows or pass --git-path.")
+        raise ValueError("System Git is required. Install system Git or pass --git-path.")
     git = Path(candidate).resolve()
     if not git.is_file() or git.name.lower() not in {"git.exe", "git"}:
         raise ValueError("--git-path must point to the Git executable, not a command")
@@ -111,7 +111,7 @@ def install(source, target, library, baseline, *, apply=False, git_path=None,
     manifest = verify(source)
     plan = {"mode": "apply" if apply else "dry-run", "version": manifest["version"],
             "app": str(app), "data": str(data), "library": str(library), "baseline_date": baseline,
-            "files": len(manifest["files"]), "state": "NOT_PUBLISHED", "license": "LicensePending",
+            "files": len(manifest["files"]), "state": "NOT_PUBLISHED", "license": "MIT", "distribution_license": "AGPL-3.0-or-later",
             "sync_started": False, "network": False, "git_path": str(git), "git_version": git_version,
             "git_init_requested": bool(init_git), "git_initialized": False}
     if not apply:

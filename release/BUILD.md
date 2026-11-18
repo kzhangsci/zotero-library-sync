@@ -41,10 +41,18 @@ site-packages、tools 和 release，关闭用户 site/PYTHONPATH 继承；不安
 
 版本只有一个来源：`tools/zotero_library_sync/manifest.json`。XPI 构建器、面板资源
 `?v=`、面板显示版本、对话框 URL、诊断版本与 RELEASE.json 全部由它生成或在打包前
-强制比对，任何不一致都会在产出包之前失败（当前为 `0.2.0-beta.15`）；构建检查
+强制比对，任何不一致都会在产出包之前失败（当前为 `0.2.0-beta.16`）；构建检查
 manifest 契约，安装版 Zotero schema 检查另记录在本地验收报告中。`.invalid`
 更新源表示手动更新，不能宣称更新服务就绪。
 所有 ZIP 使用固定时间戳和排序；相同输入/依赖得到相同 bytes。源码包没有 Git 历史。
 
 正式公开前仍需确定许可证、完成获授权的干净 Windows/Zotero 单篇真实服务验收，
 以及明确更新策略。当前任务只制作可审阅私有包。
+
+
+## macOS 构建
+
+先执行 `python3 release/fetch_macos_dependencies.py --apply`，再用
+`python3 tools/build_library_release.py --source-only --macos --apply`。
+macOS 包包含固定哈希的 arm64/x86_64 wheels，要求本机 CPython 3.13，安装时离线创建专用环境。
+原生验收工作流为 `.github/workflows/macos-beta16.yml`；真实系统 Keychain、文件锁和 Zotero 检查在临时数据和测试钥匙串中进行。

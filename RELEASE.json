@@ -1,8 +1,9 @@
 {
-  "version": "0.2.0-beta.15",
+  "version": "0.2.0-beta.16",
   "status": "public-beta",
-  "license": "LicensePending",
-  "platform": "windows-x86_64",
+  "license": "MIT",
+  "distribution_license": "AGPL-3.0-only",
+  "platform": "windows-x86_64; macos-arm64/x86_64-experimental",
   "portable_defaults": true,
   "git": "system Git required; explicit installation setup",
   "real_sync_verified": false

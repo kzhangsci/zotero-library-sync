@@ -2,13 +2,13 @@
 <window xmlns="http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul"
         xmlns:h="http://www.w3.org/1999/xhtml" id="library-sync-window"
         windowtype="library-sync:panel" title="Library Sync · 文献同步" width="1120" height="820">
-  <h:link rel="stylesheet" href="chrome://library-sync/content/panel.css?v=0.2.0-beta.15"/>
-  <script src="chrome://library-sync/content/bridge-client.js?v=0.2.0-beta.15"/>
-  <script src="chrome://library-sync/content/picker.js?v=0.2.0-beta.15"/>
-  <script src="chrome://library-sync/content/panel.js?v=0.2.0-beta.15"/>
+  <h:link rel="stylesheet" href="chrome://library-sync/content/panel.css?v=0.2.0-beta.16"/>
+  <script src="chrome://library-sync/content/bridge-client.js?v=0.2.0-beta.16"/>
+  <script src="chrome://library-sync/content/picker.js?v=0.2.0-beta.16"/>
+  <script src="chrome://library-sync/content/panel.js?v=0.2.0-beta.16"/>
   <h:main id="panel-scroll" tabindex="0" aria-label="Library Sync 可滚动设置面板">
     <h:header><h:div><h:h1>Library Sync <h:span>文献同步</h:span></h:h1>
-      <h:p id="panel-version">v0.2.0-beta.15 · 预演 → 确认 → 后台执行。请保持 Zotero 运行，以提供本地 API。</h:p>
+      <h:p id="panel-version">v0.2.0-beta.16 · 预演 → 确认 → 后台执行。请保持 Zotero 运行，以提供本地 API。</h:p>
       <h:p id="panel-boot" role="status">面板正在初始化；若长时间停留在此行，说明面板脚本未加载（升级后缓存残留时会出现），请关闭窗口重新打开，或重启 Zotero 后重试。</h:p></h:div>
       <h:div class="actions"><h:button id="jump-models" type="button">模型设置 ↓</h:button>
       <h:button id="close-panel" type="button">关闭面板</h:button></h:div></h:header>
@@ -17,8 +17,8 @@
     <h:section aria-labelledby="connection-title">
       <h:h2 id="connection-title">连接与路径</h:h2>
       <h:details id="paths-details"><h:summary>路径设置</h:summary><h:div class="paths"><h:label for="repo">后台程序目录（Repo）</h:label><h:input id="repo" type="text" spellcheck="false"/>
-        <h:label for="pythonw">后台 Python（pythonw.exe）</h:label><h:input id="pythonw" type="text" spellcheck="false"/></h:div>
-      <h:p class="hint">程序目录须包含 tools\library_plugin_bridge.py，不是 Zotero 数据或 Obsidian 文献目录。pythonw.exe 用于隐藏命令行窗口、运行同步后台。只更新 XPI 不会安装这两个组件；已有用户沿用原路径，新用户先安装 Windows 后台包。</h:p>
+        <h:label for="pythonw">后台 Python（Windows: pythonw.exe / macOS: python3）</h:label><h:input id="pythonw" type="text" spellcheck="false"/></h:div>
+      <h:p class="hint">程序目录须包含 tools\library_plugin_bridge.py，不是 Zotero 数据或 Obsidian 文献目录。Windows 使用 pythonw.exe，macOS 使用专用环境的 python3 运行后台。只更新 XPI 不会安装这两个组件；已有用户沿用原路径，新用户先安装对应系统的后台包。</h:p>
       <h:div class="actions"><h:div class="action-control"><h:button id="save-paths" type="button">保存路径</h:button><h:small id="save-paths-reason" class="disabled-reason" hidden="hidden"/></h:div>
         </h:div></h:details><h:div class="actions"><h:div class="action-control"><h:button id="connect" type="button">连接 / 启动服务</h:button><h:small id="connect-reason" class="disabled-reason" hidden="hidden"/></h:div><h:span id="connection">尚未连接</h:span></h:div>
       <h:p class="hint">仅保存这两个路径。启动服务不会开始同步；确认已有服务可用时直接复用。</h:p>

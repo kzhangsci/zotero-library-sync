@@ -18,7 +18,7 @@ var LibrarySyncBridge = (() => {
   // Single version source for the diagnostics header; the packaged ?v= strings,
   // manifest version and dialog URL are all validated against it by the Python
   // build, which refuses to produce a package on any drift.
-  const VERSION = "0.2.0-beta.15";
+  const VERSION = "0.2.0-beta.16";
   class SafeError extends Error {
     constructor(code, message, details = {}) {
       super(message); this.name = "SafeError"; this.code = code;
@@ -39,7 +39,21 @@ var LibrarySyncBridge = (() => {
     if (!Number.isInteger(x) || x < min || x > max) fail("INPUT", `${label}须为 ${min}–${max} 的整数。`);
     return x;
   }
+  function joinPath(root, ...parts) {
+    const separator = root.startsWith("/") ? "/" : "\\";
+    return [root.replace(/[\\/]+$/, ""), ...parts].join(separator);
+  }
   function paths(value) {
+    if (typeof value?.repo === "string" && value.repo.trim().startsWith("/")) {
+      const repo = value.repo.trim().replace(/\/+$/, "");
+      const pythonw = String(value.pythonw || "").trim();
+      const clean = p => p.startsWith("/") && !p.startsWith("//") && !/[\x00-\x1f]/.test(p)
+        && !p.split("/").some(part => part === "." || part === "..");
+      if (!clean(repo) || !clean(pythonw) || !/\/python(?:3(?:\.13)?)?$/.test(pythonw)) {
+        fail("PATH", "请输入 macOS 本地绝对路径，Python 路径须指向 python3 或 python3.13。不要输入命令。");
+      }
+      return {repo, pythonw};
+    }
     const absolute = /^[A-Za-z]:\\/;
     const clean = p => typeof p === "string" && absolute.test(p) &&
       !/[\x00-\x1f"<>|?*]/.test(p) && !p.slice(2).includes(":") &&
@@ -667,7 +681,7 @@ var LibrarySyncBridge = (() => {
       this.ensureOpen();
       const p = paths(this.getPaths());
       let data;
-      try { data = await this.io.readJSON(p.repo + "\\.secrets\\plugin_bridge.json"); }
+      try { data = await this.io.readJSON(joinPath(p.repo, ".secrets", "plugin_bridge.json")); }
       catch (e) {
         this.ensureOpen();
         if (e?.code === "MISSING") fail("MISSING", "尚无 bridge 连接文件。请点击“连接 / 启动服务”。");
@@ -742,10 +756,10 @@ var LibrarySyncBridge = (() => {
       }
       if (this.closed) fail("CLOSED", "面板已关闭。");
       const p = paths(this.getPaths());
-      try { await this.io.launch(p.pythonw, [p.repo + "\\tools\\library_plugin_bridge.py", "--serve", "--apply"]); }
+      try { await this.io.launch(p.pythonw, [joinPath(p.repo, "tools", "library_plugin_bridge.py"), "--serve", "--apply"]); }
       catch (e) {
         if (e instanceof SafeError && e.code === "PATH") throw e;
-        fail("LAUNCH", "无法启动本机后台程序。请核对程序目录、pythonw.exe 和启动权限；XPI 仅包含插件界面。");
+        fail("LAUNCH", "无法启动本机后台程序。请核对程序目录、Python 程序和启动权限；XPI 仅包含插件界面。");
       }
       // Launch is not success. Confirm a live, authenticated status endpoint.
       for (let attempt = 0; attempt < 8; attempt++) {
@@ -920,7 +934,7 @@ var LibrarySyncBridge = (() => {
     }
     close() { this.closed = true; this.session = null; this.sensitive.clear(); this.revealedSensitive.clear(); }
   }
-  return { Client, SafeError, errorCategory, selections, paths, descriptor, config, defaults, profile, profileDefaults, hydrationDefaults, tokenInputLimit,
+  return { Client, SafeError, joinPath, errorCategory, selections, paths, descriptor, config, defaults, profile, profileDefaults, hydrationDefaults, tokenInputLimit,
     habitPresets, habitPreset, modelParameterHelp, modelMaximum, modelRecommended, recommendedEffort, modelDetails, endpointKind, catalogEndpointKind, endpointSignature, publicModelDocs,
     bundledCatalog, GLM_STANDARD_CANDIDATES, ZCODE_PLANS, ZCODE_EFFORTS,
     previewBody, model, keyUpdates, modelChoices, testResult, diagnosisResult, remedyResult, acronymResult, UUID, ITEM_KEY, RUN_ID, VERSION };

@@ -1,4 +1,4 @@
-# Library Sync standalone export; LicensePending. See release/BUILD.md.
+# Library Sync standalone export; Original source MIT; bundled distribution AGPL. See release/DISTRIBUTION_LICENSE.md.
 from __future__ import annotations
 import argparse
 import contextlib
@@ -22,6 +22,18 @@ def execution_state(flags):
 
 @contextlib.contextmanager
 def system_awake():
+    if __import__('sys').platform == 'darwin':
+        import subprocess
+        helper = subprocess.Popen(['/usr/bin/caffeinate', '-i', '-w', str(os.getpid())], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            if helper.poll() is not None:
+                raise RuntimeError('macOS 临时防休眠未启动')
+            yield
+        finally:
+            if helper.poll() is None:
+                helper.terminate()
+            helper.wait(timeout=5)
+        return
     execution_state(ES_CONTINUOUS | ES_SYSTEM_REQUIRED)
     try:
         yield

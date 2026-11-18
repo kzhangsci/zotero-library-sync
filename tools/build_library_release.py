@@ -35,7 +35,7 @@ def zip_bytes(files):
         for name, value in sorted(files.items()):
             entry = zipfile.ZipInfo(name, (2020, 1, 1, 0, 0, 0))
             entry.create_system = 3
-            entry.external_attr = 0o100644 << 16
+            entry.external_attr = (0o100755 if name.endswith(".command") else 0o100644) << 16
             entry.compress_type = zipfile.ZIP_DEFLATED
             z.writestr(entry, value)
     return output.getvalue()
@@ -104,11 +104,12 @@ def runtime_files(repo, vendor):
         b"if os.environ.get('LIBRARY_SYNC_OFFLINE_CHECK') == '1':\n"
         b"    from offline_smoke import offline_guard\n    offline_guard()\n")
     result["THIRD_PARTY_MANIFEST.json"] = json.dumps({"schema_version": 1, "dependencies": notices,
-        "project_license": "LicensePending", "redistribution_clearance": "PENDING; includes AGPL components"}, ensure_ascii=False, indent=2).encode() + b"\n"
+        "project_license": "MIT", "distribution_license": "AGPL-3.0-only",
+        "redistribution": "Corresponding sources and notices required; see THIRD_PARTY_SOURCE_GUIDE.md"}, ensure_ascii=False, indent=2).encode() + b"\n"
     return result
 
 
-def build(repo=REPO, vendor=None, *, source_only=False):
+def build(repo=REPO, vendor=None, *, source_only=False, macos=False):
     repo = Path(repo).resolve()
     files = export_sources(repo)
     # The NOT_PUBLISHED tripwire describes local review artifacts; published
@@ -125,9 +126,40 @@ def build(repo=REPO, vendor=None, *, source_only=False):
         bundle = {"app/" + name: data for name, data in app.items()}
         bundle["setup.ps1"] = published["release/setup.ps1"]
         bundle["README.md"] = published["README.md"].replace(b"](release/", b"](app/release/")
-        bundle["LICENSE_PENDING"] = published["LICENSE_PENDING"]
+        bundle["LICENSE"] = published["LICENSE"]
+        bundle["DISTRIBUTION_LICENSE.md"] = published["release/DISTRIBUTION_LICENSE.md"]
         bundle["bundle.sha256"] = "".join(f"{digest(value)}  {name}\n" for name, value in sorted(bundle.items())).encode()
         outputs[f"library-sync-{VERSION}-windows-x64.zip"] = zip_bytes(bundle)
+    if macos:
+        app = dict(published)
+        notices = []
+        lock = json.loads((repo / "release/dependencies.macos.lock.json").read_text())
+        for package in lock["dependencies"]:
+            license_files = []
+            for wheel in package["wheels"]:
+                data = (Path(vendor or repo / "release/vendor") / "macos" / wheel["filename"]).read_bytes()
+                if digest(data) != wheel["sha256"]:
+                    raise ValueError("macOS dependency checksum failed")
+                app["release/macos-wheels/" + wheel["filename"]] = data
+                for name, content in archive_members(data):
+                    if any(word in PurePosixPath(name).name.lower() for word in ("license", "copying", "notice")):
+                        dest = "THIRD_PARTY_LICENSES/" + package["name"] + "/" + name
+                        if dest in app and app[dest] != content:
+                            raise ValueError("Different wheel notices for same dependency path")
+                        app[dest] = content
+                        if dest not in license_files:license_files.append(dest)
+            if not license_files:raise ValueError("Dependency license text missing")
+            notices.append({**package, "license_files": license_files})
+        app["THIRD_PARTY_MANIFEST.json"] = json.dumps({"project_license": "MIT", "distribution_license": "AGPL-3.0-only", "dependencies": notices}, indent=2).encode()
+        app[f"addon/library-sync-{VERSION}.xpi"] = xpi
+        app["FILES.json"] = json.dumps(inventory(app), indent=2).encode() + b"\n"
+        bundle = {"app/" + name: data for name,data in app.items()}
+        bundle["setup-macos.command"] = published["release/setup-macos.command"]
+        bundle["README.md"] = published["release/MACOS.md"]
+        bundle["LICENSE"] = published["LICENSE"]
+        bundle["DISTRIBUTION_LICENSE.md"] = published["release/DISTRIBUTION_LICENSE.md"]
+        bundle["bundle.sha256"] = "".join(f"{digest(value)}  {name}\n" for name,value in sorted(bundle.items())).encode()
+        outputs[f"library-sync-{VERSION}-macos.zip"] = zip_bytes(bundle)
     outputs["SHA256SUMS.txt"] = "".join(f"{digest(value)}  {name}\n" for name, value in sorted(outputs.items())).encode()
     return outputs
 
@@ -139,10 +171,11 @@ def main(argv=None):
     mode.add_argument("--dry-run", action="store_true")
     ap.add_argument("--limit", type=int, choices=(0, 1), default=1)
     ap.add_argument("--source-only", action="store_true")
+    ap.add_argument("--macos", action="store_true", help="Also build macOS offline wheels/bootstrap package")
     ap.add_argument("--vendor", type=Path, default=REPO / "release/vendor")
     ap.add_argument("--output", type=Path, default=REPO / "release/dist")
     args = ap.parse_args(argv)
-    outputs = build(vendor=args.vendor, source_only=args.source_only)
+    outputs = build(vendor=args.vendor, source_only=args.source_only, macos=args.macos)
     if args.apply:
         target = args.output.absolute()
         if target.resolve() != target or target == Path(target.anchor):
@@ -156,7 +189,7 @@ def main(argv=None):
             if digest(file.read_bytes()) != digest(data):
                 raise ValueError("Written release hash mismatch")
     print(json.dumps({"mode": "apply" if args.apply else "dry-run", "status": "NOT_PUBLISHED",
-        "license": "LicensePending", "outputs": [{"name": n, "bytes": len(v), "sha256": digest(v)}
+        "license": "MIT", "distribution_license": "AGPL-3.0-only", "outputs": [{"name": n, "bytes": len(v), "sha256": digest(v)}
         for n, v in sorted(outputs.items())]}, indent=2))
     return 0
 

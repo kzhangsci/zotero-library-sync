@@ -1,4 +1,4 @@
-# Library Sync standalone export; LicensePending. See release/BUILD.md.
+# Library Sync standalone export; Original source MIT; bundled distribution AGPL. See release/DISTRIBUTION_LICENSE.md.
 from __future__ import annotations
 import argparse
 import configparser
@@ -16,7 +16,7 @@ from library_paths import REPO, REPORTS, CACHE, DATA, ZOTERO_DATA, LEGACY_DEFAUL
 IS_WIN = os.name == 'nt'
 DEFAULT_ENDNOTE_DATA = LEGACY_DEFAULTS.get('endnote_data', str(DATA / 'endnote-not-configured'))
 DEFAULT_ZOTERO_DATA = str(ZOTERO_DATA)
-ZOTERO_PROFILES_INI = str(Path(os.environ.get('APPDATA', Path.home() / 'AppData' / 'Roaming')) / 'Zotero' / 'Zotero' / 'profiles.ini')
+ZOTERO_PROFILES_INI = str(Path.home() / 'Library/Application Support/Zotero/profiles.ini' if __import__('sys').platform == 'darwin' else Path(os.environ.get('APPDATA', Path.home() / 'AppData' / 'Roaming')) / 'Zotero' / 'Zotero' / 'profiles.ini')
 IMPORT_ROOT = LEGACY_DEFAULTS.get('import_root', str(DATA / 'imports'))
 JS_DIR = REPO / 'zotero_js'
 EN_TAG_PREFIX = '_en:'

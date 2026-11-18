@@ -1,11 +1,11 @@
 # 第三方许可与对应源码获取
 
-项目状态仍为 **LicensePending / NOT_PUBLISHED**。保留源码来源与许可文本不等于已经
-完成 AGPL 兼容性或全部传播义务审查；正式发布前由项目所有者确认方案。
+自有源码采用 **MIT**；集成 PyMuPDF/MuPDF 的组合发行遵守 AGPL 条件。
+详见 DISTRIBUTION_LICENSE.md。发行前应核对下列对应源码、构建资料及通知均已提供。
 
 本包使用 PyMuPDF **1.26.7**（官方 wheel），其 MuPDF 版本为 **1.26.12**。
 公开许可证为 AGPL v3，另有 Artifex 商业许可选项；未获得或声称获得商业许可。
-完整 AGPL 文本随 wheel 的 `COPYING` 与包内 `THIRD_PARTY_LICENSES` 保留。
+wheel 的 `COPYING` 仅有简短双许可声明；本项目另在 `release/AGPL-3.0.txt` 提供完整 AGPL 正文，并保留包内第三方原始通知。
 
 对应源码入口：
 
@@ -42,3 +42,7 @@ CPython 对应源码与嵌入第三方组件信息见
 本构建未修改这些官方 wheel 的库代码，仅解包并保留 notices；CPython `_pth` 和本项目
 `sitecustomize.py` 是安装配置。提供对应源码/构建方式并处理许可证兼容性是正式发布前的
 待确认事项，本地技术测试不能替代它。
+
+
+macOS 新增 psutil 7.1.3（BSD-3-Clause）；依赖版本和官方 wheel SHA-256 见 dependencies.macos.lock.json。
+macOS 不分发 CPython 本体，安装器使用用户安装的 CPython 3.13。

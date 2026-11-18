@@ -1,0 +1,50 @@
+name: beta16 macOS acceptance
+on:
+  workflow_dispatch:
+  push:
+    branches: [beta16-validation]
+permissions:
+  contents: read
+jobs:
+  macos:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, macos-15-intel]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Fetch hash-pinned macOS dependencies
+        run: python -B release/fetch_macos_dependencies.py --apply
+      - name: Prepare isolated test dependencies
+        run: python -m pip --isolated install --no-index --find-links release/vendor/macos --require-hashes --only-binary=:all: -r release/requirements-macos.lock
+      - name: Backend regression
+        env:
+          PYTHONPATH: tools
+        run: python -B -m unittest test_library_platform test_macos_install test_library_qa test_library_issues test_library_remedy
+      - name: Frontend regression
+        run: node --test tools/zotero_library_sync/tests/*.test.cjs
+      - name: Build bootstrap package
+        run: python -B tools/build_library_release.py --source-only --macos --apply
+      - name: Install Zotero on disposable runner
+        run: |
+          curl --fail --location --retry 2 --max-time 120 'https://download.zotero.org/client/release/10.0.8/Zotero-10.0.8.dmg' -o "$RUNNER_TEMP/zotero.dmg"
+          hdiutil attach "$RUNNER_TEMP/zotero.dmg" -nobrowse -mountpoint "$RUNNER_TEMP/zotero-volume"
+          cp -R "$RUNNER_TEMP/zotero-volume/Zotero.app" "$RUNNER_TEMP/Zotero.app"
+          hdiutil detach "$RUNNER_TEMP/zotero-volume"
+      - name: Native Keychain, PDF, process and Zotero acceptance
+        run: python -B tools/macos_acceptance.py --zotero "$RUNNER_TEMP/Zotero.app/Contents/MacOS/zotero" --output native-result.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native-${{ matrix.os }}
+          path: |
+            native-result.json
+            release/dist/*-macos.zip
+          if-no-files-found: warn
