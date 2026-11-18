@@ -40,8 +40,14 @@ CPython 对应源码与嵌入第三方组件信息见
 [官方 Windows SPDX SBOM](https://www.python.org/ftp/python/3.13.17/python-3.13.17-embed-amd64.zip.spdx.json)。
 
 本构建未修改这些官方 wheel 的库代码，仅解包并保留 notices；CPython `_pth` 和本项目
-`sitecustomize.py` 是安装配置。提供对应源码/构建方式并处理许可证兼容性是正式发布前的
-待确认事项，本地技术测试不能替代它。
+`sitecustomize.py` 是安装配置。
+
+beta.16 随发行提供 `library-sync-0.2.0-beta.16-third-party-sources.zip`，
+归档 PyMuPDF、MuPDF（含 thirdparty 树）及其余七个 Python 依赖的官方源码包。
+`SOURCES.json` 记录每个归档的版本、原始地址和 SHA-256；与
+`third-party-sources.lock.json` 一致。所有发行文件的整体校验值见 `SHA256SUMS.txt`。
+应用自身的完整源码和安装、构建脚本另在同版本 `-source.zip` 中。
+应将源码附件与应用包一起保留、发布，不能只发布二进制包而省去对应源码。
 
 
 macOS 新增 psutil 7.1.3（BSD-3-Clause）；依赖版本和官方 wheel SHA-256 见 dependencies.macos.lock.json。

@@ -279,9 +279,20 @@ def _archive_locked(plan, result, run, handles):
         originals.mkdir()
         for path in generated:
             if path in handles:
-                _move_open(handles[path], originals / path.name)
+                if os.name != 'nt':
+                    from library_platform import mac_move_locked
+                    handles[path].seek(0)
+                    if hashlib.file_digest(handles[path], 'sha256').hexdigest() != info['files'][str(path)]:
+                        raise RuntimeError('归档前产物发生变化；未继续处理')
+                    mac_move_locked(handles[path], path, originals / path.name)
+                else:
+                    _move_open(handles[path], originals / path.name)
     for path, updated in updates.items():
         stream = handles[path]
+        if os.name != 'nt':
+            stream.seek(0)
+            if hashlib.file_digest(stream, 'sha256').hexdigest() != info['files'][str(path)]:
+                raise RuntimeError('重新关联前文件发生变化；未继续处理')
         stream.seek(0)
         stream.write(updated)
         stream.truncate()

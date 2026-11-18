@@ -265,10 +265,20 @@ def prepare(client, run_id, reviewed_changes=None, current_id=None):
     return dict(original=original, papers=papers, frozen=frozen, before=before, owned=owned, source_map=source_map, dirty=baseline_dirty, tools_dirty=tools_dirty, before_index=before_index, guards=guards, receipt=receipt)
 
 def assert_workflow_available():
-    import msvcrt
     path = s.RUNS / 'workflow.lock'
     if not path.exists():
         return
+    if os.name != 'nt':
+        from library_platform import IS_MAC, posix_guard
+        if not IS_MAC:
+            raise RuntimeError('Unsupported operating system')
+        try:
+            with posix_guard(path):
+                pass
+        except OSError as error:
+            raise RuntimeError('Another workflow holds the lock; recovery preview stopped') from error
+        return
+    import msvcrt
     with path.open('rb') as stream:
         try:
             msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)

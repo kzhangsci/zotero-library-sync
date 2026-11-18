@@ -112,6 +112,33 @@ def reclaim_mac_step_lock(path):
     except (OSError, progress.ProgressError):
         return False
 
+def mac_move_locked(stream, source, destination):
+    if not IS_MAC:
+        raise RuntimeError('Native macOS required')
+    source, destination = (Path(source), Path(destination))
+    held = os.fstat(stream.fileno())
+    expected = (held.st_dev, held.st_ino)
+    current = source.lstat()
+    if (current.st_dev, current.st_ino) != expected:
+        raise RuntimeError('归档前文件已被替换；未移动')
+    libc = ctypes.CDLL('/usr/lib/libSystem.B.dylib', use_errno=True)
+    rename = libc.renamex_np
+    rename.argtypes = (ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint)
+    rename.restype = ctypes.c_int
+
+    def move(first, second):
+        if rename(os.fsencode(first), os.fsencode(second), 4):
+            error = ctypes.get_errno()
+            raise OSError(error, os.strerror(error), str(first))
+    move(source, destination)
+    moved = destination.lstat()
+    if (moved.st_dev, moved.st_ino) != expected:
+        try:
+            move(destination, source)
+        except OSError:
+            raise RuntimeError('归档时文件并发变化；已保留归档副本，请检查：' + str(destination)) from None
+        raise RuntimeError('归档时文件并发变化；已恢复，未继续处理')
+
 def keychain_protect(data, *, decrypt=False, backend=None):
     backend = backend or NativeKeychain()
     if decrypt:

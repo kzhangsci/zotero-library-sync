@@ -26,9 +26,9 @@
     },
     {
       "path": "tools/macos_acceptance.py",
-      "input_sha256": "9506935b258414d03e765aee60ff5cc3562b5124d6b2f863a8d27e75172547a4",
-      "sha256": "9506935b258414d03e765aee60ff5cc3562b5124d6b2f863a8d27e75172547a4",
-      "bytes": 14301,
+      "input_sha256": "00a7423b68692924344dfca348c4a1bb638460a7e4f74adb83ed1f26460dbffc",
+      "sha256": "00a7423b68692924344dfca348c4a1bb638460a7e4f74adb83ed1f26460dbffc",
+      "bytes": 16074,
       "transformed": false
     },
     {
@@ -152,9 +152,9 @@
     },
     {
       "path": "tools/library_platform.py",
-      "input_sha256": "69a5fba6a1d2e6f16c4aee675e4cc2f26bc33877154d989e55a5914f69c72d41",
-      "sha256": "282f399f07aa702929920133e3c1ee6c2148d6ddff3a26b91d14aaaf9a9365ce",
-      "bytes": 11762,
+      "input_sha256": "cc034c6ac4b2ae008717bb77fbdaf41170c4f346c779fa3f2a095e0227d8c403",
+      "sha256": "a7e24ba2957d65c132de184e69d9f6a464412b4b144a25eaeb361fab57570695",
+      "bytes": 12980,
       "transformed": true
     },
     {
@@ -194,9 +194,9 @@
     },
     {
       "path": "tools/library_resume.py",
-      "input_sha256": "f9509e6e8423141057f75ab2563fb108aa5e2519b85817c59cfc52c6d6d8d87f",
-      "sha256": "b1828ac8422a153ee232e4a918d8eac21f444b87d3befe2e1b58fc67dea6e218",
-      "bytes": 21065,
+      "input_sha256": "1218f8d374b258f62ddab91cdf9626183de277dcac4ea00c08f7f7ef5eb8801c",
+      "sha256": "012cf035361dbc9233821c2cc9ccbd71c51fc48c52c42c27f221a3086c4dfa6f",
+      "bytes": 21453,
       "transformed": true
     },
     {
@@ -215,9 +215,9 @@
     },
     {
       "path": "tools/library_refresh.py",
-      "input_sha256": "2cf49f07ef78178ee4ba932e262aeb4b18a134910f9fe69bffb3389f651313f7",
-      "sha256": "fb5604b3f0a73bfe2e8805025d66fd605968de40162ddf5fc620d432f90ea930",
-      "bytes": 15136,
+      "input_sha256": "56969d400984dc9aca0ee26c54f46256e096fc47ede3b48c4d793bb3ef7e0e53",
+      "sha256": "f9cbb15d8962fbfac8340da5e706000f7351d98be37be709a6a1937b2b749c41",
+      "bytes": 15825,
       "transformed": true
     },
     {
@@ -600,9 +600,9 @@
     },
     {
       "path": "release/MACOS.md",
-      "input_sha256": "c5d5f8434d37a259c419ec6eae3d609861dbc6460770a6c9fa51e930ba39e0c6",
-      "sha256": "c5d5f8434d37a259c419ec6eae3d609861dbc6460770a6c9fa51e930ba39e0c6",
-      "bytes": 3590,
+      "input_sha256": "8ab3efb63aa4dfdb5c152045a6911e004341fe3d555838d0b948d0ff6ac710f0",
+      "sha256": "8ab3efb63aa4dfdb5c152045a6911e004341fe3d555838d0b948d0ff6ac710f0",
+      "bytes": 3995,
       "transformed": false
     },
     {
@@ -740,9 +740,9 @@
     },
     {
       "path": "release/THIRD_PARTY_SOURCE_GUIDE.md",
-      "input_sha256": "28ea84575b9bf3af1cd9a28943e71d200dce77a11afa7e694aafecf5134d0092",
-      "sha256": "28ea84575b9bf3af1cd9a28943e71d200dce77a11afa7e694aafecf5134d0092",
-      "bytes": 2772,
+      "input_sha256": "4228c3dd0349885a25af0f3ebac15ca6eafe65a94c42a14346c71ddfadab7f47",
+      "sha256": "4228c3dd0349885a25af0f3ebac15ca6eafe65a94c42a14346c71ddfadab7f47",
+      "bytes": 3186,
       "transformed": false
     },
     {

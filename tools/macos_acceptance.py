@@ -90,6 +90,36 @@ def main():
         sync.release(crash_folder,'qc','synthetic-recovery')
         assert not (crash_folder/'.sync_qc.lock').exists()
         checks.append('native_step_lock_crash_recovery')
+        import library_sync as controller
+        from library_resume import assert_workflow_available
+        assert_workflow_available()  # Missing lock: preview must not create it.
+        workflow=controller.RUNS/'workflow.lock'
+        assert not workflow.exists()
+        with platform.posix_lock(workflow):
+            try:assert_workflow_available()
+            except RuntimeError:pass
+            else:raise AssertionError('Recovery preview ignored a live workflow lock')
+        assert_workflow_available()
+        checks.append('native_recovery_preview_workflow_lock')
+        original=temp/'archive-source.md';original.write_bytes(b'verified synthetic source')
+        archived=temp/'archive-target.md'
+        with platform.posix_guard(original) as stream:
+            platform.mac_move_locked(stream,original,archived)
+            stream.seek(0);assert stream.read()==archived.read_bytes()
+        assert not original.exists()
+        original.write_bytes(b'another synthetic source')
+        with platform.posix_guard(original) as stream:
+            try:platform.mac_move_locked(stream,original,archived)
+            except FileExistsError:pass
+            else:raise AssertionError('Archive replaced an existing target')
+            assert original.read_bytes()==b'another synthetic source'
+            replacement=temp/'replacement.md';replacement.write_bytes(b'editor replacement')
+            os.replace(replacement,original)
+            try:platform.mac_move_locked(stream,original,temp/'unexpected.md')
+            except RuntimeError:pass
+            else:raise AssertionError('Archive moved a replaced source')
+            assert original.read_bytes()==b'editor replacement'
+        checks.append('native_source_archive_identity_and_no_overwrite')
         private=temp/'.secrets/plugin_bridge.json'
         write_private_manifest(private,{'token':'synthetic-test-only'})
         assert private.stat().st_mode & 0o777==0o600 and private.parent.stat().st_mode & 0o777==0o700
