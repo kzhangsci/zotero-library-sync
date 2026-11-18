@@ -410,6 +410,21 @@ class WorkerActionTests(RemedyFixture):
 
 
 class LocalActionTests(RemedyFixture):
+    def test_explicit_adoption_of_reading_markup_needs_no_model_and_can_finalize(self):
+        folder=self.seed();state,_=self.freeze_state()
+        state.update(baseline={'schema':1},qa_frozen=s.paper_fingerprint(self.paper))
+        s.save_json(self.run_dir/'state.json',state)
+        zh=folder/f'{CK}_ZH.md'
+        zh.write_text(zh.read_text(encoding='utf-8').replace('观测到的混合','**观测到的混合**'),encoding='utf-8')
+        kept=zh.read_bytes()
+        result=remedy.remedy(self.client,self.runs,self.run_id,KEY,'adopt_existing',confirm=True)
+        self.assertTrue(result['ok'])
+        self.worker.assert_not_called()
+        import library_resume
+        prepared,_,_=library_resume.source_record(self.run_id)
+        self.assertTrue(prepared['papers'][0]['qa']['ok'])
+        self.assertEqual(zh.read_bytes(),kept)
+
     def test_adopt_existing_makes_no_model_call_and_updates_ledgers(self):
         state, paper = self.freeze_state()
         s.save_json(self.runs / "discovery.json", {"schema": 1, "since": "2026-01-01T00:00:00+00:00",

@@ -208,9 +208,9 @@
     },
     {
       "path": "tools/library_resume.py",
-      "input_sha256": "aa66259535d5bf63383cb91f2e8d8fb178a514fad6f9b713bafc2255f28f5489",
-      "sha256": "695b2864f96728c712f718684a33c0312a104e32b59ee92883f1665a73a51685",
-      "bytes": 24598,
+      "input_sha256": "ef75b0b13924baa8c5194c369a40f93919598e295671ee4ad6d5b05020429e1d",
+      "sha256": "7777cee6d0cbbe68275c8ec2e1d47fa20ef1250ad783285c8bd37f1267f265cf",
+      "bytes": 24835,
       "transformed": true
     },
     {
@@ -299,9 +299,9 @@
     },
     {
       "path": "tools/zotero_library_sync/bridge-client.js",
-      "input_sha256": "ee0a522c7e17c0a0862b3b069d0133f346a8b505b857dbf35744a100d6f07fa7",
-      "sha256": "ee0a522c7e17c0a0862b3b069d0133f346a8b505b857dbf35744a100d6f07fa7",
-      "bytes": 65791,
+      "input_sha256": "54ff6656c588e42a6452db2acf0db929f82b78023f90a651a285e503152f5ad1",
+      "sha256": "54ff6656c588e42a6452db2acf0db929f82b78023f90a651a285e503152f5ad1",
+      "bytes": 65860,
       "transformed": false
     },
     {
@@ -404,9 +404,9 @@
     },
     {
       "path": "tools/zotero_library_sync/tests/protocol.test.cjs",
-      "input_sha256": "39643da9b3d4a5a0001ab41e9ea508c75a1f8639e9e7b4937e9da7a0a5922f3a",
-      "sha256": "39643da9b3d4a5a0001ab41e9ea508c75a1f8639e9e7b4937e9da7a0a5922f3a",
-      "bytes": 28915,
+      "input_sha256": "5cff79d8b6ea65443701a0ec0d162e593446267f4e6d468551ef5d9c897ded2e",
+      "sha256": "5cff79d8b6ea65443701a0ec0d162e593446267f4e6d468551ef5d9c897ded2e",
+      "bytes": 29377,
       "transformed": false
     },
     {
@@ -551,9 +551,9 @@
     },
     {
       "path": "tools/test_library_remedy.py",
-      "input_sha256": "6826de1672a256c9c89a3cb096bb14febd0c177a2ecaf996054c89aadfad2550",
-      "sha256": "6826de1672a256c9c89a3cb096bb14febd0c177a2ecaf996054c89aadfad2550",
-      "bytes": 37875,
+      "input_sha256": "63bd71a618e04e1ade2aabf87acb88b6e17d5bc025476cc74213454a1a304ae1",
+      "sha256": "63bd71a618e04e1ade2aabf87acb88b6e17d5bc025476cc74213454a1a304ae1",
+      "bytes": 38720,
       "transformed": false
     },
     {

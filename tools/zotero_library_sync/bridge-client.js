@@ -762,7 +762,8 @@ var LibrarySyncBridge = (() => {
         fail("LAUNCH", "无法启动本机后台程序。请核对程序目录、Python 程序和启动权限；XPI 仅包含插件界面。");
       }
       // Launch is not success. Confirm a live, authenticated status endpoint.
-      for (let attempt = 0; attempt < 8; attempt++) {
+      const deadline = Date.now() + 30000;
+      for (let attempt = 0; attempt < 60 && Date.now() < deadline; attempt++) {
         if (this.closed) fail("CLOSED", "面板已关闭；已启动的服务仍独立运行。");
         await this.io.sleep(500);
         this.session = null;

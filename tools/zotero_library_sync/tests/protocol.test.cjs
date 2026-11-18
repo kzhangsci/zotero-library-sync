@@ -167,7 +167,18 @@ test("read-only open never launches; failed launch handshake is bounded", async 
   const f = fixture(); f.manifest = null;
   await assert.rejects(f.client.connect(false), { code: "MISSING" }); assert.equal(f.launches.length, 0);
   await assert.rejects(f.client.connect(true), { code: "LAUNCH" });
-  assert.equal(f.launches.length, 1); assert.equal(f.sleeps.length, 8);
+  assert.equal(f.launches.length, 1);
+  assert.ok(f.sleeps.length > 0 && f.sleeps.length <= 60);
+  assert.ok(f.sleeps.reduce((sum,n)=>sum+n,0)<=30000);
+});
+
+test('cold bridge startup lasting beyond four seconds is confirmed without a second launch', async()=>{
+  const f=fixture();f.online=false;
+  f.io.sleep=async ms=>{f.sleeps.push(ms);if(f.sleeps.length>=10)f.online=true;};
+  const status=await f.client.connect(true);
+  assert.equal(status.active,false);
+  assert.equal(f.launches.length,1);
+  assert.equal(f.sleeps.length,10);
 });
 test("invalid descriptor does not launch or send credentials", async () => {
   const f = fixture(); f.manifest.host = "attacker.invalid";

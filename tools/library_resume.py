@@ -132,14 +132,18 @@ def source_record(run_id):
             completion_path = safe_path(s.RUNS, saved['attempt'] + '/remedy_state.json')
             completion_digest = s.sha256(completion_path)
             record = read_json(completion_path)
-            if record.get('status') != 'completed' or record.get('result', {}).get('ok') is not True or saved.get('attempt') != record.get('run_id') or (record.get('key') != p['key']) or (record.get('source_run') != run_id) or (record.get('action') not in PUBLISH_SCOPE):
+            if record.get('status') != 'completed' or record.get('result', {}).get('ok') is not True or saved.get('attempt') != record.get('run_id') or (record.get('key') != p['key']) or (record.get('source_run') != run_id) or (record.get('action') not in (*PUBLISH_SCOPE, 'adopt_existing')):
                 raise RuntimeError('单篇处置尚未完成或凭据不一致；未进入收尾')
             candidate = _effective_paper(s.RUNS, run_id, p)
             if (candidate.get('qa') or {}).get('ok') is not True:
                 raise RuntimeError('单篇处置产物在验收后变化；请复查')
             folder = safe_path(s.LIBRARY, 'papers/' + p['citekey'])
             published = set(record['result'].get('published', []))
-            scope = PUBLISH_SCOPE[record['action']]
+            if record['action'] == 'adopt_existing':
+                scope = ('EN', 'MD', 'ZH')
+                published = {str(folder / (p['citekey'] + '_' + kind + '.md')) for kind in scope}
+            else:
+                scope = PUBLISH_SCOPE[record['action']]
             for name in published:
                 member = Path(name)
                 if not member.is_absolute() or not member.is_relative_to(folder):
