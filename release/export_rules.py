@@ -14,24 +14,28 @@ RUNTIME_MODULES = (
     "attachments_audit", "attachments_normalize_prep", "citekey_reformat_prep",
     "claude_client", "codex_client", "common", "fix_latex_spacing", "glm_client",
     "glm_concurrency", "intake_new", "library_control", "library_discovery", "library_intake",
+    "library_issues", "library_remedy",
     "library_paths", "library_plugin_bridge", "library_power", "library_progress",
     "library_qa", "library_resume", "library_sync", "library_source", "library_refresh", "mineru_client",
-    "mineru_credentials", "model_api", "model_catalog", "qc_glm", "sync", "zotero_local",
+    "mineru_credentials", "model_api", "model_catalog", "qc_glm", "report_retention", "sync", "zotero_local",
 )
 PLUGIN_FILES = ("bootstrap.js", "bridge-client.js", "manifest.json", "panel.css", "panel.js",
                 "panel.xhtml", "picker.js", "prefs.js", "runtime.js")
-PLUGIN_TESTS = ("helpers.cjs", "ui.test.cjs", "picker.test.cjs", "protocol.test.cjs", "runtime.test.cjs", "model-parameters.test.cjs", "source-refresh.test.cjs", "model-catalog.test.cjs", "tongji.test.cjs", "model-switch.test.cjs")
+PLUGIN_TESTS = ("helpers.cjs", "ui.test.cjs", "ui-beta15.test.cjs", "picker.test.cjs", "protocol.test.cjs", "runtime.test.cjs", "model-parameters.test.cjs", "source-refresh.test.cjs", "model-catalog.test.cjs", "tongji.test.cjs", "model-switch.test.cjs", "zcode-plan.test.cjs")
 RELEASE_FILES = ("README.md", "LICENSE_PENDING.md", "PRIVACY.md", "BUILD.md", "CHANGELOG.md",
                  "setup.ps1", "install.py", "offline_smoke.py", "fetch_dependencies.py",
                  "export_rules.py", "dependencies.lock.json", "requirements.txt",
-                 "DATA.gitignore", "LIBRARY.gitignore", "THIRD_PARTY_SOURCE_GUIDE.md")
+                 "DATA.gitignore", "LIBRARY.gitignore", "THIRD_PARTY_SOURCE_GUIDE.md",
+                 "journal_acronyms.base.csv")
 SOURCE_ALLOWLIST = (tuple("tools/" + x + ".py" for x in RUNTIME_MODULES)
                    + tuple("tools/zotero_library_sync/" + x for x in PLUGIN_FILES)
                    + tuple("tools/zotero_library_sync/tests/" + x for x in PLUGIN_TESTS)
                    + ("tools/notify_library.ps1", "tools/build_zotero_plugin.py",
                       "tools/build_library_release.py", "tools/test_library_release.py",
                       "tools/test_library_progress.py", "tools/test_qc_protocol.py", "tools/test_model_pipeline.py",
-                      "tools/test_library_source.py", "tools/test_model_catalog.py", "tools/test_model_api.py", "tools/test_model_profiles.py")
+                      "tools/test_library_source.py", "tools/test_model_catalog.py", "tools/test_model_api.py", "tools/test_model_profiles.py",
+                      "tools/test_library_issues.py", "tools/test_library_remedy.py",
+                      "tools/test_library_control_beta15.py", "tools/test_plugin_bridge_beta15.py")
                    + ("release/test_export_core.py", "release/BBT_SETUP.md", "release/journal_acronyms.example.csv")
                    + tuple("release/" + x for x in RELEASE_FILES))
 
@@ -71,12 +75,13 @@ def portable_python(name, text):
             if isinstance(node, ast.Constant) and isinstance(node.value, str) and node.value.startswith("Missing ownership baseline;"):
                 node.value = "Missing ownership baseline; legacy recovery is not supported in this distribution"
     if name == "intake_new":
-        keep = {"CK_V2", "JOURNAL_TYPES", "MEETING"}
-        body = ast.parse("import csv\nimport re\nfrom library_paths import LIBRARY as LIB, REPORTS\n").body
+        keep = {"CK_V2", "JOURNAL_TYPES", "MEETING", "BASE_TABLE", "ACRONYM"}
+        body = ast.parse("import csv\nimport re\nfrom pathlib import Path\n"
+                         "from library_paths import LIBRARY as LIB, REPORTS\n").body
         for node in tree.body:
             if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id in keep for t in node.targets):
                 body.append(node)
-            if isinstance(node, ast.FunctionDef) and node.name in {"norm", "acronym_table"}:
+            if isinstance(node, ast.FunctionDef) and node.name in {"norm", "acronym_table", "_acronym_rows"}:
                 body.append(node)
         tree.body = body
     changed = False
@@ -133,6 +138,11 @@ def scan_public(name, data, markers=()):
 def export_sources(repo):
     repo = Path(repo).resolve()
     markers = private_markers(repo)
+    # The plugin manifest is the one canonical version source: the XPI builder
+    # derives its version from it and refuses drift, so the release metadata
+    # reads the same value instead of keeping a second hand-updated copy.
+    plugin_version = json.loads((repo / "tools" / "zotero_library_sync" / "manifest.json")
+                                 .read_text(encoding="utf-8"))["version"]
     result, provenance = {}, []
     for name in SOURCE_ALLOWLIST:
         path = repo / name
@@ -152,7 +162,7 @@ def export_sources(repo):
         result["README.md"] = result["README.md"].replace(f"]({document})".encode(), f"](release/{document})".encode())
     result["NOT_PUBLISHED"] = b"NOT_PUBLISHED\nLocal review artifacts only. No remote or public repository has been created.\n"
     result["LICENSE_PENDING"] = b"LicensePending\nNo project open-source license has been selected. Do not infer MIT.\n"
-    result["RELEASE.json"] = json.dumps({"version": "0.2.0-beta.9", "status": "public-beta",
+    result["RELEASE.json"] = json.dumps({"version": plugin_version, "status": "public-beta",
         "license": "LicensePending", "platform": "windows-x86_64", "portable_defaults": True,
         "git": "system Git required; explicit installation setup", "real_sync_verified": False}, indent=2).encode() + b"\n"
     result["SOURCE_MANIFEST.json"] = json.dumps({"schema_version": 1, "export": "explicit-allowlist",

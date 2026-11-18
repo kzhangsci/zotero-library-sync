@@ -46,7 +46,7 @@ def api_json(method: str, path: str, payload: dict | None=None) -> dict:
     status, body = _req(method, API + path, data, {'Authorization': 'Bearer ' + token(), 'Content-Type': 'application/json', 'Accept': '*/*'})
     d = json.loads(body.decode('utf-8'))
     if d.get('code') not in (0, '0', None) or 'data' not in d:
-        raise RuntimeError(f'MinerU API error {path}: code={d.get('code')} msg={d.get('msg')}')
+        raise RuntimeError(f"MinerU API error {path}: code={d.get('code')} msg={d.get('msg')}")
     return d['data']
 
 def strip_annotations(src, dst: Path, from_page: int=0, to_page: int=-1) -> Path:
@@ -110,7 +110,7 @@ def parse_pdf(pdf: Path, out_dir: Path, lang: str='en', pages: str | None=None, 
             zurl = st['full_zip_url']
             break
         if state == 'failed':
-            raise RuntimeError(f'MinerU failed: {st.get('err_msg')}')
+            raise RuntimeError(f"MinerU failed: {st.get('err_msg')}")
         if time.time() - t0 > max_wait:
             raise RuntimeError(f'MinerU timeout after {int(time.time() - t0)}s (batch {batch_id}, state {state})')
         time.sleep(poll)
@@ -191,7 +191,7 @@ def parse_pdf_parts(pdf: Path, out_dir: Path, lang: str='en', part_pages: int=FA
                 break
             failed = [x for x in items if x.get('state') == 'failed']
             if failed:
-                raise RuntimeError(f'MinerU failed: {failed[0].get('err_msg')} (part {failed[0].get('data_id')})')
+                raise RuntimeError(f"MinerU failed: {failed[0].get('err_msg')} (part {failed[0].get('data_id')})")
             if time.time() - t0 > max_wait:
                 raise RuntimeError(f'MinerU timeout after {int(time.time() - t0)}s (batch {batch_id}, states {states})')
             time.sleep(poll)

@@ -60,7 +60,8 @@ details { margin: 12px 0; } summary { cursor: pointer; font-weight: 600; padding
    Compatibility correction; real-Zotero behaviour still needs validation.
    Buttons keep working: user-select never disables event handlers. */
 #status-error, #status-text, #frozen-config, #task-notice, #summary,
-#report-path, #status-rows, #selection, #preview-text, #model-result, #message {
+#report-path, #status-rows, #selection, #preview-text, #model-result, #message,
+#panel-version, #panel-boot {
   -moz-user-select: text; user-select: text; cursor: text;
 }
 #task-notice, #draft-state { white-space: pre-wrap; overflow-wrap: anywhere; }

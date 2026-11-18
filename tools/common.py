@@ -136,7 +136,7 @@ def read_refs(conn: sqlite3.Connection) -> dict[int, dict]:
         d['first_author'] = first_author(d['author'])
         d['doi_norm'] = normalize_doi(d['electronic_resource_number'])
         d['title_norm'] = normalize_title(d['title'])
-        d['type_name'] = SDB_REF_TYPE_NAMES.get(d['reference_type'], f'type#{d['reference_type']}')
+        d['type_name'] = SDB_REF_TYPE_NAMES.get(d['reference_type'], f"type#{d['reference_type']}")
         out[d['id']] = d
     return out
 
@@ -195,10 +195,10 @@ def build_plan(sets: list[dict], groups: dict[str, dict], rows: list[dict]) -> t
         gid = int(row['endnote_gid'])
         g = by_gid.get(gid)
         if not g:
-            warnings.append(f'mapping row for unknown group gid={gid} ({row.get('set_name')}/{row.get('group_name')})')
+            warnings.append(f"mapping row for unknown group gid={gid} ({row.get('set_name')}/{row.get('group_name')})")
             continue
         seen_gids.add(gid)
-        src = f'{row['set_name']}/{row['group_name']}'
+        src = f"{row['set_name']}/{row['group_name']}"
         action = (row.get('action') or 'keep').strip().lower()
         if action == 'skip':
             skipped.append((src, len(g['members'])))
@@ -215,7 +215,7 @@ def build_plan(sets: list[dict], groups: dict[str, dict], rows: list[dict]) -> t
         plan[key]['sources'].append(src)
     for s_name, g in custom_groups_with_sets(sets, groups):
         if g['gid'] not in seen_gids:
-            warnings.append(f'custom group not in mapping (will NOT be migrated): {s_name}/{g['name']} gid={g['gid']} n={len(g['members'])}')
+            warnings.append(f"custom group not in mapping (will NOT be migrated): {s_name}/{g['name']} gid={g['gid']} n={len(g['members'])}")
     out: list[dict] = []
     idx: dict[str, int] = {}
     for key in order:
@@ -231,7 +231,7 @@ def plan_membership(plan: list[dict]) -> dict[int, list[str]]:
     for s in plan:
         for g in s['groups']:
             for r in g['recs']:
-                memb.setdefault(r, []).append(f'{s['set']}/{g['name']}')
+                memb.setdefault(r, []).append(f"{s['set']}/{g['name']}")
     return memb
 
 def el_text(el: ET.Element | None) -> str:

@@ -1,9 +1,14 @@
 /* Privileged Gecko adapter. It never uses Zotero.HTTP (which may debug-log bodies). */
 LibrarySync = {
   panel: null,
+  panelWatch: null,
   windows: new Map(),
   sourceWindow: null,
-  init() { this.sourceWindow = null; },
+  // Bounded wait for the panel's explicit ready handshake. The panel signals
+  // as soon as its UI is wired (before any bridge/model work), so provider or
+  // network failures can never hold a usable window hostage past this limit.
+  PANEL_READY_TIMEOUT_MS: 30000,
+  init() { this.sourceWindow = null; this.panelWatch = null; },
   localFile(path) {
     try {
       const file = Cc["@mozilla.org/file/local;1"].createInstance(Ci.nsIFile);
@@ -182,6 +187,17 @@ LibrarySync = {
     }
     Zotero.launchURL(references[id]);
   },
+  openZoteroItem(key) {
+    // Panel-triggered item navigation: validated key, user library only.
+    if (typeof key !== "string" || !LibrarySyncBridge.ITEM_KEY.test(key)) {
+      throw new LibrarySyncBridge.SafeError("INPUT", "无效的 Zotero 条目 key。");
+    }
+    const item = Zotero.Items.getByLibraryAndKey(Zotero.Libraries.userLibraryID, key);
+    if (!item) throw new LibrarySyncBridge.SafeError("INPUT", "在“我的文库”中找不到该条目。");
+    const win = Zotero.getMainWindow();
+    if (win?.ZoteroPane?.selectItem) { win.ZoteroPane.selectItem(item.id); return; }
+    Zotero.launchURL(`zotero://select/library/items/${key}`);
+  },
   copyText(text) {
     // Called only from the explicit "复制诊断" click. The panel already
     // redacted the text; no keys or raw responses reach the clipboard.
@@ -251,16 +267,106 @@ LibrarySync = {
       this.panel.focus();
       if (selected) {
         if (this.panel.librarySyncController) this.panel.librarySyncController.captureSelection();
-        else this.panel.arguments[0].selected = true;
+        else if (this.panel.arguments?.[0]) this.panel.arguments[0].selected = true;
       }
       return;
     }
-    this.panel = window.openDialog("chrome://library-sync/content/panel.xhtml?v=0.2.0-beta.9", "library-sync-panel",
-      "chrome,centerscreen,resizable,dialog=no,width=1120,height=820", { host: this, selected });
+    let dialog = null;
+    try {
+      dialog = window.openDialog("chrome://library-sync/content/panel.xhtml?v=0.2.0-beta.15", "library-sync-panel",
+        "chrome,centerscreen,resizable,dialog=no,width=1120,height=820", { host: this, selected });
+    } catch (_) { dialog = null; }
+    if (!dialog || typeof dialog.addEventListener !== "function" || dialog.closed) {
+      // Chrome registration or dialog creation failed. Never keep a dead
+      // reference: the menu must be able to open a fresh panel immediately.
+      try { dialog?.close?.(); } catch (_) {}
+      this.panel = null;
+      this.reportOpenFailure(window);
+      return;
+    }
+    this.panel = dialog;
+    this.watchPanel(dialog);
   },
-  panelClosed(window) { if (this.panel === window) this.panel = null; },
+  reportOpenFailure(window) {
+    // Sanitized host-side fallback: the panel document never loaded, so there
+    // is no panel DOM to write into. The message names no exceptions or keys.
+    let shown = false;
+    try {
+      if (typeof Services?.prompt?.alert === "function") {
+        Services.prompt.alert(window, "Library Sync",
+          "面板窗口无法打开（chrome 注册或面板资源缺失）。请重启 Zotero 后重试；已运行的后台任务不受影响。");
+        shown = true;
+      }
+    } catch (_) {}
+    if (!shown) {
+      try { window.alert?.("面板窗口无法打开（chrome 注册或面板资源缺失）。请重启 Zotero 后重试。"); } catch (_) {}
+    }
+  },
+  clearPanelWatch() {
+    const watch = this.panelWatch;
+    if (!watch) return;
+    this.panelWatch = null;
+    if (watch.timer !== null) clearTimeout(watch.timer);
+    for (const [target, event, handler] of watch.listeners) {
+      try { target.removeEventListener(event, handler); } catch (_) {}
+    }
+  },
+  panelReady(window) {
+    // Explicit ready handshake from the panel controller.
+    if (this.panelWatch?.window === window) this.clearPanelWatch();
+  },
+  watchPanel(panel) {
+    this.clearPanelWatch();
+    const host = this;
+    const listeners = [];
+    const watch = { window: panel, timer: null, listeners };
+    const finish = () => { if (host.panelWatch === watch) host.clearPanelWatch(); };
+    const add = (target, event, handler) => {
+      target.addEventListener(event, handler);
+      listeners.push([target, event, handler]);
+    };
+    add(panel, "library-sync-ready", finish);
+    // Any close path (user, failed init, shutdown) drops the reference; the
+    // panel's own controller also calls panelClosed, but a panel whose scripts
+    // never ran can only be noticed here.
+    add(panel, "unload", () => host.panelClosed(panel));
+    watch.timer = setTimeout(() => {
+      if (host.panelWatch !== watch || panel.closed) return;
+      host.clearPanelWatch();
+      host.markPanelFailed(panel);
+    }, this.PANEL_READY_TIMEOUT_MS);
+    this.panelWatch = watch;
+  },
+  markPanelFailed(panel) {
+    // Bounded timeout without a ready handshake: the document or its scripts
+    // failed. Write a sanitized hint into the document if one exists, then
+    // close the dead window so reopening creates a fresh panel.
+    if (this.panel === panel) this.panel = null;
+    let shown = false;
+    try {
+      const note = panel.document?.getElementById?.("message");
+      if (note) {
+        note.hidden = false;
+        note.setAttribute("data-error", "true");
+        note.textContent = "面板初始化未在限定时间内完成（未收到就绪信号，多为升级后资源缓存残留或脚本加载失败）。本窗口将关闭；请重新打开面板，若仍失败请重启 Zotero 后重试。";
+        shown = true;
+      }
+    } catch (_) {}
+    if (!shown) {
+      try {
+        Services.prompt?.alert?.(panel, "Library Sync",
+          "面板资源加载失败（未收到就绪信号）。请重新打开面板，若仍失败请重启 Zotero 后重试。");
+      } catch (_) {}
+    }
+    try { if (!panel.closed) panel.close(); } catch (_) {}
+  },
+  panelClosed(window) {
+    if (this.panel === window) this.panel = null;
+    if (this.panelWatch?.window === window) this.clearPanelWatch();
+  },
   shutdown() {
     for (const window of [...this.windows.keys()]) this.removeFromWindow(window);
+    this.clearPanelWatch();
     if (this.panel && !this.panel.closed) this.panel.close();
     this.panel = null;
     this.sourceWindow = null;

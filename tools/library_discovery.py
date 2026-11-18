@@ -73,14 +73,43 @@ def load(runs, *, seed_since=None):
         ledger = apply_result(ledger, state)
     return ledger
 
-def discover(client, runs, limit=0):
+def _sha(path):
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest() if Path(path).is_file() else None
+
+def issue_changed(library, row):
+    if not isinstance(row, dict):
+        return False
+    citekey = row.get('citekey')
+    if isinstance(citekey, str) and re.fullmatch('[^<>:"/\\\\|?*\\x00-\\x1f]+', citekey) and (citekey not in ('.', '..')):
+        folder = Path(library) / 'papers' / citekey
+        recorded = row.get('evidence', {}).get('content_sha256') if isinstance(row.get('evidence'), dict) else None
+        if isinstance(recorded, dict) and recorded:
+            current = {f'{citekey}_{suffix}.md': _sha(folder / f'{citekey}_{suffix}.md') for suffix in ('EN', 'MD', 'ZH', 'Note')}
+            if any((current.get(name) != digest for name, digest in recorded.items())):
+                return True
+    reasons = row.get('reasons') if isinstance(row.get('reasons'), list) else []
+    for reason in reasons:
+        match = re.search('missing attachment file: (.+)$', str(reason))
+        if match and Path(match.group(1).strip().rstrip('》。；;,.')).is_file():
+            return True
+    return False
+
+def discover(client, runs, limit=0, library=None):
     from library_paths import BASELINE_DATE
+    if library is None:
+        from library_paths import LIBRARY as library
     ledger = load(runs, seed_since=BASELINE_DATE)
+    from library_issues import load as load_issues
+    issues = load_issues(runs).get('items', {})
     items = client.list_all('items/top')
-    candidates = {}
+    candidates, attention, reopened = ({}, [], [])
     for item in items:
         d, key = (item['data'], item['key'])
         if d.get('deleted') or d.get('itemType') in ('attachment', 'annotation', 'note'):
+            continue
+        issue = issues.get(key, {})
+        issue_status = issue.get('status') if isinstance(issue, dict) else None
+        if issue_status in ('complete', 'excluded'):
             continue
         previous = ledger['entries'].get(key, {})
         if previous.get('status') == 'completed':
@@ -89,6 +118,12 @@ def discover(client, runs, limit=0):
             recent = timestamp(d['dateAdded']) >= timestamp(ledger['since'])
         except (ValueError, KeyError, TypeError) as exc:
             raise RuntimeError(f'{key} 的添加日期无效，不能可靠判断是否新增') from exc
+        if issue_status in ('needs_repair', 'missing_pdf', 'incomplete'):
+            if issue_changed(library, issue):
+                reopened.append(key)
+            else:
+                attention.append({'key': key, 'citekey': d.get('citationKey', ''), 'title': d.get('title', ''), 'dateAdded': d['dateAdded'], 'issue_status': issue_status, 'blocked': (issue.get('reasons') or ['此前未通过验收/准备；等待处置动作或显式复查'])[:4] + ['指纹未变化；检测新增不会自动重发模型']})
+                continue
         if recent or previous.get('status') == 'pending':
             candidates[key] = {'key': key, 'citekey': d.get('citationKey', ''), 'title': d.get('title', ''), 'dateAdded': d['dateAdded']}
     ordered = sorted(candidates.values(), key=lambda p: (ledger['entries'].get(p['key'], {}).get('last_reviewed', ''), timestamp(p['dateAdded']), p['key']))
@@ -97,9 +132,9 @@ def discover(client, runs, limit=0):
     for p in ordered[cap:]:
         deferred.append({**p, 'blocked': ['超出本批上限；保留到下次确认']})
     for key, entry in ledger['entries'].items():
-        if entry['status'] == 'pending' and key not in candidates:
+        if entry['status'] == 'pending' and key not in candidates and (key not in issues):
             deferred.append({'key': key, 'citekey': entry.get('citekey', ''), 'blocked': ['条目不在当前有效库中；保留待办，请人工核对']})
-    return {'mode': 'automatic', 'since': ledger['since'], 'seed_since': BASELINE_DATE, 'revision': revision(runs), 'observed': ordered, 'deferred': deferred, 'selected': [p['key'] for p in selected]}
+    return {'mode': 'automatic', 'since': ledger['since'], 'seed_since': BASELINE_DATE, 'revision': revision(runs), 'observed': ordered, 'deferred': deferred, 'attention': attention, 'reopened': reopened, 'selected': [p['key'] for p in selected]}
 
 def begin(runs, plan):
     discovery = plan['discovery']

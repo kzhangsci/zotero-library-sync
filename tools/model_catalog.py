@@ -51,6 +51,14 @@ def highest_effort(levels):
         return None
     return max(levels, key=_EFFORT_ORDER.index)
 
+def recommended_effort(levels):
+    if not levels or any((level not in _EFFORT_ORDER for level in levels)):
+        return None
+    if 'high' in levels:
+        return 'high'
+    capable = [level for level in levels if level not in ('none', 'minimal')]
+    return max(capable, key=_EFFORT_ORDER.index) if capable else None
+
 def known_details(provider, model, *, kind='standard'):
     if kind not in ('standard', 'coding_plan'):
         return {}

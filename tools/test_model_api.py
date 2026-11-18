@@ -122,6 +122,12 @@ class OfflineCase(unittest.TestCase):
         guard = patch.object(api.model_catalog, "DEFAULT_CATALOG", api.model_catalog.OfficialModelCatalog())
         guard.start()
         self.addCleanup(guard.stop)
+        # The local zcode login exists only where the real CLI adapter ships.
+        # Default every legacy test to the export-stub behaviour; dedicated
+        # ZcodeProviderTests re-enable it explicitly.
+        guard = patch.object(api, "zcode_available", return_value=False)
+        guard.start()
+        self.addCleanup(guard.stop)
         self.store = api.DPAPIConfigStore(self.root / "config.dpapi", crypto=fake_crypto)
         self.transport = FakeTransport()
 
@@ -903,6 +909,255 @@ class ProbeTests(OfflineCase):
                                   slot_root=self.root / "slots")
             self.assertNotIn(FAKE_KEYS["deepseek"], repr(caught.exception))
             self.assertEqual(len(transport.calls), 1)
+
+
+class ZcodeProviderTests(OfflineCase):
+    """The local-login provider: no key, no endpoint, and honestly no route."""
+
+    def setUp(self):
+        super().setUp()
+        enable = patch.object(api, "zcode_available", return_value=True)
+        enable.start(); self.addCleanup(enable.stop)
+        # Hermetic routing facts: never read the developer's real CLI config
+        # from tests. Both plans are unsupported exactly like production.
+        self.report = patch.object(api, "zcode_route_report", return_value={
+            "coding": {"supported": False, "reason": "login_route_unavailable",
+                       "provider_id": api.ZCODE_CODING_PROVIDER_ID,
+                       "models": {model: {"max_output_tokens": 128000,
+                                          "effort_levels": ["low", "high", "max"], "default_effort": "max"}
+                                  for model in api.ZCODE_MODELS}},
+            "start": {"supported": False, "reason": "start_route_not_implemented",
+                      "provider_id": api.ZCODE_START_PROVIDER_KEY, "models": {}}})
+        self.report.start(); self.addCleanup(self.report.stop)
+
+    def test_profile_shape_and_rejections(self):
+        base = {"provider": "zcode", "model": "glm-5.3-flash", "reasoning_effort": "max"}
+        self.assertEqual(api.validate_profile(base),
+                         {**base, "plan": "coding", "timeout": 1500, "max_tokens": 128000})
+        for bad, code in [
+            ({**base, "model": "glm-4.6"}, "zcode_unknown_model"),
+            ({**base, "reasoning_effort": "xhigh"}, "zcode_effort_level"),
+            ({**base, "base_url": "https://user.example"}, "zcode_no_endpoint_fields"),
+            ({**base, "thinking": "enabled"}, "zcode_no_endpoint_fields"),
+        ]:
+            with self.assertRaisesRegex(api.ConfigError, code):
+                api.validate_profile(bad)
+        for effort in ("default", "low", "high", "max"):
+            self.assertEqual(api.validate_profile({**base, "reasoning_effort": effort})["reasoning_effort"], effort)
+        # A start-plan profile keeps parsing so legacy configs load and display.
+        start = api.validate_profile({"provider": "zcode", "plan": "start", "model": "glm-5.3-flash",
+                                      "reasoning_effort": "low"})
+        self.assertEqual(start["plan"], "start")
+        defaults = api.profile_defaults()
+        self.assertEqual(defaults["zcode"]["max_tokens"], 128000)
+        self.assertEqual(defaults["zcode"]["plan"], "coding")
+        # Fresh templates default to the user preference high, not the CLI's max.
+        self.assertEqual(defaults["zcode"]["reasoning_effort"], "high")
+        self.assertNotIn("base_url", defaults["zcode"])
+
+    def test_credentials_are_login_presence_not_stored_keys(self):
+        value = {"schema": 1, "qc": {"provider": "zcode", "model": "glm-5.3"},
+                 "zh": {"provider": "zcode", "model": "glm-5.3"}}
+        # beta.14 fail-closed: every zcode route is unroutable, so a REQUIRED
+        # saved zcode role is rejected with the fixed route-unavailable code
+        # whether or not the local login exists — login presence is a
+        # display fact, never a usable credential.
+        for logged_in in (False, True):
+            with patch.object(api, "zcode_logged_in", return_value=logged_in):
+                with self.assertRaisesRegex(api.ConfigError, "zcode_route_unavailable"):
+                    api.validate_config(value, require_credentials=True)
+                with self.assertRaisesRegex(api.ConfigError, "zcode_route_unavailable"):
+                    api.validate_config(value, require_credentials=True, required_roles=("qc",))
+        # Reading/migrating the legacy config stays permissive, and an UNUSED
+        # zh zcode role (translation off, qc on an API provider) must not
+        # block the QC path.
+        logged = patch.object(api, "zcode_logged_in", return_value=True)
+        logged.start(); self.addCleanup(logged.stop)
+        fixed = {"schema": 1, "qc": {"provider": "zcode", "model": "glm-5.3", "reasoning_effort": "max"},
+                 "zh": {"provider": "zcode", "model": "glm-5.3", "reasoning_effort": "max"}}
+        normalized = api.validate_config(fixed)
+        self.assertEqual(normalized,
+                         {"schema": 1, "qc": {**fixed["qc"], "plan": "coding", "timeout": 1500, "max_tokens": 128000},
+                          "zh": {**fixed["zh"], "plan": "coding", "timeout": 1500, "max_tokens": 128000}})
+        mixed = {"schema": 1, "qc": {"provider": "glm", "model": "glm-5.3"},
+                 "zh": {"provider": "zcode", "model": "glm-5.3"}}
+        self.assertEqual(api.validate_config(mixed, require_credentials=True, key_store=FAKE_KEYS,
+                                             required_roles=("qc",))["qc"]["provider"], "glm")
+        with self.assertRaisesRegex(api.ConfigError, "zcode_route_unavailable"):
+            api.validate_config(mixed, require_credentials=True, key_store=FAKE_KEYS)
+        with self.assertRaisesRegex(api.ConfigError, "zcode_route_unavailable"):
+            api.assert_callable_routes(normalized, ("qc",))
+        public = api.public_config(key_store=self.store)
+        self.assertTrue(public["credentials"]["zcode"])
+
+    def test_model_choices_and_backend_never_touch_the_cli(self):
+        # glm_client (with its private-home v2 credential copies) must never be
+        # routed through this provider; the honest answer is a fixed failure.
+        base = {"provider": "zcode", "model": "glm-5.3-flash", "reasoning_effort": "max"}
+        choices = api.model_choices(profile=base)
+        self.assertEqual(choices["source"], "bundled_catalog")
+        self.assertEqual(choices["endpoint_kind"], "zcode")
+        self.assertEqual(choices["plan"], "coding")
+        self.assertEqual(choices["models"], [])
+        self.assertIn("已停用", choices["notice"])
+        self.assertIn("改选 API Key 服务商", choices["notice"])
+        logged = patch.object(api, "zcode_logged_in", return_value=True)
+        logged.start(); self.addCleanup(logged.stop)
+        import glm_client
+        with patch.object(glm_client, "ask", side_effect=AssertionError("no CLI call")), \
+                patch.object(glm_client, "ensure_home", side_effect=AssertionError("no home copy")):
+            backend = api.create_backend(base, "qc", log=None)
+            self.assertEqual(backend.cache_identity["endpoint"], "zcode-cli")
+            self.assertEqual(backend.cache_identity["plan"], "coding")
+            self.assertEqual(backend.cache_identity["reasoning_level"], "max")
+            with self.assertRaisesRegex(api.ConfigError, "zcode_route_unavailable"):
+                backend.ask("Reply with exactly OK.")
+            with self.assertRaisesRegex(api.ConfigError, "zcode_route_unavailable"):
+                api.create_backend({**base, "plan": "start"}, "qc", log=None).ask("start plan")
+            with self.assertRaisesRegex(api.ConfigError, "zcode_route_unavailable"):
+                api.test_connection(profile=base, key_store={})
+        self.assertEqual(backend.last_usage, None)
+
+
+class ZcodePlanTests(OfflineCase):
+    """Both subscription plans are truthfully unsupported; fixed reason codes."""
+
+    def setUp(self):
+        super().setUp()
+        enable = patch.object(api, "zcode_available", return_value=True)
+        enable.start(); self.addCleanup(enable.stop)
+
+    def report(self, start_supported=False, start_models=("glm-5.3-flash",)):
+        return {
+            "coding": {"supported": False, "reason": "login_route_unavailable",
+                       "provider_id": api.ZCODE_CODING_PROVIDER_ID,
+                       "models": {model: {"max_output_tokens": 128000,
+                                          "effort_levels": ["low", "high", "max"], "default_effort": "max"}
+                                  for model in api.ZCODE_MODELS}},
+            "start": {"supported": start_supported, "reason": "" if start_supported else "start_route_not_implemented",
+                      "provider_id": api.ZCODE_START_PROVIDER_KEY,
+                      "models": {model: {"max_output_tokens": 128000} for model in start_models} if start_supported else {}},
+        }
+
+    def test_start_plan_unsupported_before_any_cli_call(self):
+        import glm_client
+        base = {"provider": "zcode", "plan": "start", "model": "glm-5.3-flash", "reasoning_effort": "max"}
+        with patch.object(api, "zcode_route_report", return_value=self.report(False)), \
+                patch.object(glm_client, "ask", side_effect=AssertionError("no CLI call")):
+            # Parsing stays possible (legacy display); runs fail closed with a
+            # fixed code before any CLI invocation or credential read.
+            self.assertEqual(api.validate_profile(base)["plan"], "start")
+            with self.assertRaisesRegex(api.ConfigError, "zcode_route_unavailable"):
+                api.create_backend(base, "qc", log=None).ask("no start route")
+            # The listing endpoint answers with an honest empty catalog instead
+            # of an error or — worse — a silently rerouted Coding Plan list.
+            choices = api.model_choices(profile=base)
+            self.assertEqual(choices, {"provider": "zcode", "plan": "start", "models": [], "source": "bundled_catalog",
+                                       "endpoint_kind": "zcode", "fetched_at": None,
+                                       "notice": "Start Plan 没有可调用的本机 CLI 路由（未实现官方 Start 调用，也不自建私有 OAuth 适配）"
+                                                 "（start_route_not_implemented）。不会改走其它订阅或计费服务商；请改选 API Key 服务商"
+                                                 "（GLM / DeepSeek / 同济）。已保存的 ZCode 配置仍可读取显示，便于迁移。"})
+
+    def test_both_plans_list_nothing_and_never_reroute(self):
+        with patch.object(api, "zcode_route_report", return_value=self.report(False)):
+            for plan in ("start", "coding"):
+                choices = api.model_choices(profile={"provider": "zcode", "plan": plan,
+                                                     "model": "glm-5.3-flash", "reasoning_effort": "max"})
+                self.assertEqual(choices["models"], [])
+                self.assertNotIn("details", choices)
+                self.assertIn("改选 API Key 服务商", choices["notice"])
+        self.assertEqual(api.zcode_plan_models("start", self.report(False)), ())
+
+    def test_legacy_zcode_defaults_to_coding_and_plan_is_zcode_only(self):
+        with patch.object(api, "zcode_route_report", return_value=self.report()):
+            legacy = api.validate_profile({"provider": "zcode", "model": "glm-5.3", "reasoning_effort": "max"})
+            self.assertEqual(legacy["plan"], "coding")
+            with self.assertRaisesRegex(api.ConfigError, "zcode_unknown_plan"):
+                api.validate_profile({"provider": "zcode", "plan": "pro", "model": "glm-5.3", "reasoning_effort": "max"})
+        with self.assertRaisesRegex(api.ConfigError, "plan_zcode_only"):
+            api.validate_profile({**profile(), "plan": "coding"})
+
+    def test_cache_identities_reflect_plan_and_effective_level(self):
+        # The route cannot run, but a cached identity still names the parsed
+        # subscription and the effective effort: a plan or level change must
+        # never reuse another route's entry.
+        identities = {effort: api.create_backend({"provider": "zcode", "plan": "coding", "model": "glm-5.3",
+                                                  "reasoning_effort": effort}, "qc", log=None).cache_identity
+                      for effort in ("default", "low", "high", "max")}
+        self.assertEqual([identities[e]["reasoning_level"] for e in ("default", "low", "high", "max")],
+                         ["", "low", "high", "max"])
+        self.assertEqual(len({json.dumps(i, sort_keys=True) for i in identities.values()}), 4)
+        start = api.create_backend({"provider": "zcode", "plan": "start", "model": "glm-5.3-flash",
+                                    "reasoning_effort": "high"}, "qc", log=None).cache_identity
+        self.assertEqual(start["plan"], "start")
+        self.assertNotEqual(start, identities["high"])
+        fresh = api.create_backend({**api.profile_defaults()["zcode"], "model": "glm-5.3"}, "qc", log=None)
+        self.assertEqual(fresh.cache_identity["reasoning_level"], "high")
+
+    def test_route_report_is_sanitized_and_never_leaks_option_values(self):
+        official = {"kind": "anthropic", "options": {"baseURL": api.ZCODE_CLI_CODING_ENDPOINT,
+                                                     "apiKeyRequired": True, "apiKey": ""},
+                    "headers": {}, "models": {"glm-5.3": {"limit": {"output": 128000},
+                                                          "reasoning": {"levels": ["low", "high", "max"],
+                                                                        "defaultLevel": "max"}}}}
+        cli = {"provider": {"bigmodel": {"options": {"apiKey": "CANARY-CLI-KEY", "baseURL": "https://canary"},
+                                          "models": {"glm-5.3": {"limit": {"output": 128000}}}}}}
+        v2 = {"provider": {"builtin:bigmodel-start-plan": {
+            "options": {"apiKey": "CANARY-V2-KEY"},
+            "enabled": True, "systemDisabledReason": "arbitrary provider free text CANARY-REASON",
+            "models": {"GLM-5.3-Flash": {"reasoning": {"variants": ["low", "high", "max"], "defaultVariant": "max"},
+                                          "limit": {"output": 128000}}}}}}
+        executable = patch.object(api, "zcode_executable", return_value="C:\\fake\\zcode.cmd")
+        executable.start(); self.addCleanup(executable.stop)
+        with tempfile.TemporaryDirectory(prefix="zcode-report-") as directory:
+            def paths(provider_document):
+                cli_path = Path(directory) / "cli.json"
+                v2_path = Path(directory) / "v2.json"
+                cli_path.write_text(json.dumps(provider_document), encoding="utf-8")
+                v2_path.write_text(json.dumps(v2), encoding="utf-8")
+                return cli_path, v2_path
+            report = api.zcode_route_report(*paths(cli))
+            summary = api.zcode_plan_summary(*paths(cli))
+            official_report = api.zcode_route_report(*paths({"provider": {"bigmodel": official}}))
+        # An arbitrary baseURL / saved API-key profile is NOT the Coding Plan.
+        self.assertFalse(report["coding"]["supported"])
+        self.assertEqual(report["coding"]["reason"], "provider_config_unsupported")
+        self.assertEqual(report["coding"]["models"], {})
+        # The official login-managed shape still never claims support: our
+        # adapter simply has no callable route.
+        self.assertFalse(official_report["coding"]["supported"])
+        self.assertEqual(official_report["coding"]["reason"], "login_route_unavailable")
+        self.assertEqual(list(official_report["coding"]["models"]), ["glm-5.3"])
+        self.assertEqual(official_report["coding"]["models"]["glm-5.3"]["max_output_tokens"], 128000)
+        # Start is unsupported regardless of the App entry being "enabled"; its
+        # model ids surface separately as display-only facts.
+        for row in (report["start"], official_report["start"]):
+            self.assertFalse(row["supported"])
+            self.assertEqual(row["reason"], "start_route_not_implemented")
+        self.assertEqual(report["start"]["app_models"], ["glm-5.3-flash"])
+        self.assertEqual(api.zcode_plan_models("start", report), ())
+        self.assertEqual(summary["start"]["models"], [])
+        for rendered in (json.dumps(report), json.dumps(summary)):
+            for canary in ("CANARY-CLI-KEY", "CANARY-V2-KEY", "CANARY-REASON", "apiKey", "baseURL"):
+                self.assertNotIn(canary, rendered)
+        # Absent configs stay truthful, with fixed reason codes only.
+        empty = api.zcode_route_report(Path(self.temp.name) / "missing-cli.json",
+                                       Path(self.temp.name) / "missing-v2.json")
+        self.assertEqual((empty["coding"]["reason"], empty["start"]["reason"]),
+                         ("cli_config_unreadable", "start_route_not_implemented"))
+        self.assertEqual(api.zcode_plan_models("start", empty), ())
+
+    def test_route_report_requires_the_cli_executable(self):
+        executable = patch.object(api, "zcode_executable", return_value="")
+        executable.start(); self.addCleanup(executable.stop)
+        report = api.zcode_route_report(Path(self.temp.name) / "missing.json", Path(self.temp.name) / "missing.json")
+        self.assertEqual(report["coding"]["reason"], "cli_executable_unavailable")
+        self.assertEqual(report["start"]["reason"], "cli_executable_unavailable")
+        self.assertFalse(any(row["supported"] for row in report.values()))
+        stub = patch.object(api, "zcode_available", return_value=False)
+        stub.start(); self.addCleanup(stub.stop)
+        report = api.zcode_route_report(Path(self.temp.name) / "missing.json", Path(self.temp.name) / "missing.json")
+        self.assertEqual(report["coding"]["reason"], "cli_adapter_unavailable")
 
 
 if __name__ == "__main__":

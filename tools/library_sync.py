@@ -101,7 +101,7 @@ def watch_progress(run_id):
 def git(repo, *args):
     p = subprocess.run([str(GIT or 'git'), '-C', str(repo), *args], capture_output=True)
     if p.returncode:
-        raise RuntimeError(f'git {args[0]} failed: {p.stderr.decode('utf-8', 'replace')[:500]}')
+        raise RuntimeError(f"git {args[0]} failed: {p.stderr.decode('utf-8', 'replace')[:500]}")
     return p.stdout.decode('utf-8', 'strict')
 
 def dirty_paths(repo):
@@ -119,7 +119,7 @@ def dirty_paths(repo):
     return result
 
 @contextlib.contextmanager
-def guarded_file(path, *, writable=False, create=False, movable=False):
+def guarded_file(path, *, writable=False, create=False, movable=False, delete_on_close=False):
     if os.name != 'nt':
         raise RuntimeError('Automatic publication/commit requires Windows file sharing guards')
     import ctypes
@@ -129,8 +129,11 @@ def guarded_file(path, *, writable=False, create=False, movable=False):
     kernel.CreateFileW.argtypes = (wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE)
     kernel.CreateFileW.restype = wintypes.HANDLE
     kernel.CloseHandle.argtypes = (wintypes.HANDLE,)
-    access = 2147483648 | (1073741824 if writable else 0) | (65536 if movable else 0)
-    handle = kernel.CreateFileW(str(Path(path).absolute()), access, 1, None, 1 if create else 3, 128, None)
+    if delete_on_close and (not create):
+        raise ValueError('Delete-on-close requires a newly created file')
+    access = 2147483648 | (1073741824 if writable else 0) | (65536 if movable or delete_on_close else 0)
+    flags = 67108864 if delete_on_close else 128
+    handle = kernel.CreateFileW(str(Path(path).absolute()), access, 1, None, 1 if create else 3, flags, None)
     if handle == ctypes.c_void_p(-1).value:
         raise ctypes.WinError(ctypes.get_last_error())
     try:
@@ -219,18 +222,52 @@ def active_workers():
     data = json.loads(result.stdout.strip() or '[]')
     return data if isinstance(data, list) else [data]
 
+def release_legacy_paper_lock(path, *, own_pid=None):
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+    if path.name not in ('.sync_md.lock', '.sync_qc.lock', '.sync_zh.lock') or path.resolve() != path.absolute():
+        return False
+    try:
+        with guarded_file(path, movable=True) as stream:
+            marker = re.fullmatch(b'([^\\x00-\\x20]{1,200}) \\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\d', stream.read(513))
+            if marker is None:
+                return False
+            if not re.fullmatch(b'oneclick_[A-Z0-9]{8}', marker[1]):
+                from sync import STALE_LOCK_HOURS
+                step = path.stem.removeprefix('.sync_')
+                age = time.time() - os.fstat(stream.fileno()).st_mtime
+                if age <= STALE_LOCK_HOURS[step] * 3600:
+                    return False
+            if any((p.get('ProcessId') != own_pid for p in active_workers())):
+                return False
+            delete = ctypes.WinDLL('kernel32', use_last_error=True).SetFileInformationByHandle
+            delete.argtypes = (wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD)
+            delete.restype = wintypes.BOOL
+            disposition = ctypes.c_ubyte(1)
+            if not delete(msvcrt.get_osfhandle(stream.fileno()), 4, ctypes.byref(disposition), 1):
+                raise ctypes.WinError(ctypes.get_last_error())
+            return True
+    except FileNotFoundError:
+        return True
+    except PermissionError:
+        return False
+
 def assert_idle():
     processes = active_workers()
     locks = list((LIBRARY / 'papers').glob('*/.sync_*.lock'))
+    if not processes and os.name == 'nt':
+        locks = [path for path in locks if not release_legacy_paper_lock(path)]
     if processes or locks:
-        raise RuntimeError(f'其他同步尚未结束：{len(processes)} 个进程 / {len(locks)} 个锁；未重启或终止它们')
+        names = '，'.join((path.parent.name + '/' + path.name for path in locks[:3]))
+        raise RuntimeError(f'同步仍被占用或锁的归属无法核实。进程 {len(processes)} 个，锁 {len(locks)} 个。{names}')
 
 def choose_items(client, keys='', since='', collection='', limit=0):
     if sum((bool(v) for v in (keys, since, collection))) > 1:
         raise ValueError('-Keys / -Since / -Collection 只能选择一种')
     if not any((keys, since, collection)):
         from library_discovery import discover
-        return discover(client, RUNS, limit)['selected']
+        return discover(client, RUNS, limit, LIBRARY)['selected']
     if keys:
         tokens = [s.strip() for s in keys.split(',') if s.strip()]
         direct = [t for t in tokens if re.fullmatch('[A-Z0-9]{8}', t)]
@@ -253,7 +290,7 @@ def choose_items(client, keys='', since='', collection='', limit=0):
         cols = [x for x in client.list_all('collections') if x['data'].get('name') == collection]
         if len(cols) != 1:
             raise RuntimeError(f'需要唯一分类「{collection}」；首次请运行 tools/library_sync.ps1 -Setup -Apply')
-        selected = client.list_all(f'collections/{cols[0]['key']}/items/top')
+        selected = client.list_all(f"collections/{cols[0]['key']}/items/top")
     selected = [x for x in selected if not x['data'].get('deleted') and x['data'].get('itemType') not in ('attachment', 'annotation', 'note')]
     selected.sort(key=lambda x: (x['data'].get('dateAdded', ''), x['key']))
     if limit:
@@ -342,7 +379,7 @@ def make_plan(client, args):
     discovery = None
     if not any((args.keys, args.since, args.collection)):
         from library_discovery import discover
-        discovery = discover(client, RUNS, args.limit)
+        discovery = discover(client, RUNS, args.limit, LIBRARY)
         selected = discovery['selected']
     else:
         selected = choose_items(client, args.keys, args.since, args.collection, args.limit)
@@ -364,7 +401,7 @@ def make_plan(client, args):
 
         def _has_fulltext(paper):
             folder = LIBRARY / 'papers' / paper['citekey']
-            return any(((folder / f'{paper['citekey']}_{suffix}.md').is_file() for suffix in ('EN', 'MD')))
+            return any(((folder / f"{paper['citekey']}_{suffix}.md").is_file() for suffix in ('EN', 'MD')))
         candidates = [p for p in items if not p.get('blocked') and p.get('citekey') and _has_fulltext(p)]
         if candidates:
             dirty = dirty_paths(LIBRARY)
@@ -373,13 +410,13 @@ def make_plan(client, args):
                 try:
                     verified, unexplained = ordinary_continue_receipts(paper, dirty)
                 except (OSError, ValueError, yaml.YAMLError) as error:
-                    paper.setdefault('blocked', []).append('文献目录有未提交原文但无法读取或解析（' + type(error).__name__ + ': ' + str(error)[:200] + '），保守暂缓；请人工检查或提交后重新预演：' + f'papers/{paper.get('citekey', '')}/。来源 PDF 未变；未改附件或文献')
+                    paper.setdefault('blocked', []).append('文献目录有未提交原文但无法读取或解析（' + type(error).__name__ + ': ' + str(error)[:200] + '），保守暂缓；请人工检查或提交后重新预演：' + f"papers/{paper.get('citekey', '')}/。来源 PDF 未变；未改附件或文献")
                     continue
                 if unexplained:
                     paper.setdefault('blocked', []).append('文献目录有未提交原文，且无法核实为本流水线上次未完成产物（需同条目、同来源 PDF 的独立历史运行收据且逐字节一致）；请人工审核或提交后重新预演：' + '; '.join(unexplained) + '。来源 PDF 未变；未改附件或文献')
                 elif verified:
                     paper['source_continue_preview'] = {'same_source': True, 'verified_uncommitted': sorted(verified)}
-                    paper.setdefault('note', '来源未变：复用原文/笔记，仅补质检与缺失中译；不重新解析、不归档、不生成重复附件')
+                    paper.setdefault('note', '来源未变：复用原文/笔记，补质检与缺失中译，并检查已有译文的可自动修订问题')
     plan = {'schema': 1, 'created': dt.datetime.now().isoformat(timespec='seconds'), 'id': dt.datetime.now().strftime('%Y%m%d_%H%M%S_') + uuid.uuid4().hex[:6], 'items': items, 'swap': args.swap, 'workers': args.workers, 'chunk_parallel': args.chunk_parallel, 'commit': not args.no_commit, 'translate': not no_translate, 'refresh_source': refresh_source}
     for paper in items:
         apply_translation_policy(paper, plan)
@@ -389,7 +426,7 @@ def make_plan(client, args):
         plan['model_config'] = validate_config(configured, required_roles=model_roles(plan))
     if discovery is not None:
         plan['discovery'] = discovery
-        plan['deferred'] = discovery['deferred'] + [p for p in items if p.get('blocked')]
+        plan['deferred'] = discovery['deferred'] + discovery.get('attention', []) + [p for p in items if p.get('blocked')]
         plan['items'] = [p for p in items if not p.get('blocked')]
     elif args.since:
         from library_discovery import load, revision
@@ -403,31 +440,31 @@ def make_plan(client, args):
 def preview(plan):
     print(f'本次模式：{translation_mode(plan)}。')
     if plan.get('discovery'):
-        print(f'自动新增起点（UTC）：{plan['discovery']['since']}；不改变任何 Zotero 分类。')
-    print(f'命中 {len(plan['items'])} 篇；默认只预览。', flush=True)
+        print(f"自动新增起点（UTC）：{plan['discovery']['since']}；不改变任何 Zotero 分类。")
+    print(f"命中 {len(plan['items'])} 篇；默认只预览。", flush=True)
     for p in plan['items']:
-        print(f'\n{p['key']}  {p.get('citekey')}\n  {p.get('title', '')}', flush=True)
+        print(f"\n{p['key']}  {p.get('citekey')}\n  {p.get('title', '')}", flush=True)
         print(f'  {translation_mode(p)}')
         if p.get('source_continue_preview'):
             print('  来源未变：复用原文/笔记，仅补质检与缺失中译；不重新解析、不归档、不生成重复附件。')
-        print(f'  元数据：{p.get('metadata', {})}；附件动作：{len(p.get('actions', []))}')
+        print(f"  元数据：{p.get('metadata', {})}；附件动作：{len(p.get('actions', []))}")
         if p.get('metadata', {}).get('refresh'):
             print('  已审核源附件；BBT 刷新 citekey 后再生成并校验改名/两份制动作，当前不使用旧键构造目标路径。')
-            print('  源附件角色：' + ', '.join((f'{k}={v['role']}' for k, v in p.get('roles', {}).items())))
+            print('  源附件角色：' + ', '.join((f"{k}={v['role']}" for k, v in p.get('roles', {}).items())))
         for action in p.get('actions', []):
-            print(f'  - {action.get('action')} {action.get('oldName', '')} -> {action.get('newName', action.get('annotatedName', ''))}')
+            print(f"  - {action.get('action')} {action.get('oldName', '')} -> {action.get('newName', action.get('annotatedName', ''))}")
         for reason in p.get('blocked', []):
             print(f'  阻碍：{reason}')
         for warning in p.get('warnings', []):
             print(f'  注意：{warning}')
     for p in plan.get('deferred', []):
-        print(f'\n保留待办 {p['key']} {p.get('citekey', '')}：{'；'.join(p.get('blocked', []))}')
+        print(f"\n保留待办 {p['key']} {p.get('citekey', '')}：{'；'.join(p.get('blocked', []))}")
     if plan.get('model_config'):
         for role, label in (('qc', '质检'), ('zh', '翻译')):
             if role not in model_roles(plan):
                 continue
             profile = plan['model_config'][role]
-            print(f'  {label} API：{profile['provider']} / {profile['model']}；推理={profile['reasoning_effort']}')
+            print(f"  {label} API：{profile['provider']} / {profile['model']}；推理={profile['reasoning_effort']}")
     translation_step = ' → 按文献规则中译' if translation_enabled(plan) else ' → 源文模式'
     print(f'\n确认执行后：附件整理 → MinerU → 模型质检{translation_step} → 自动验收 → 索引 → 选择性提交；结果记录在任务状态与报告，不发送桌面通知。')
 
@@ -458,12 +495,15 @@ def index_child(library, output, args):
     finally:
         sync.LIB, sync.REPORTS, sys.argv = old
 
-def run_sync(args, logfile, env, *, index_output=None):
+def run_sync(args, logfile, env, *, index_output=None, library_root=None):
     logfile.parent.mkdir(parents=True, exist_ok=True)
     command = [str(PYTHON), '-B', '-X', 'utf8', str(REPO / 'tools' / 'sync.py'), *args]
     if index_output is not None:
         bootstrap = 'import sys; sys.path.insert(0, sys.argv.pop(1)); from library_sync import index_child; sys.exit(index_child(sys.argv[1], sys.argv[2], sys.argv[3:]))'
         command = [str(PYTHON), '-B', '-X', 'utf8', '-c', bootstrap, str(REPO / 'tools'), str(LIBRARY), str(index_output), *args]
+    elif library_root is not None:
+        bootstrap = 'import sys, pathlib; sys.path.insert(0, sys.argv.pop(1)); import sync; sync.LIB = pathlib.Path(sys.argv.pop(1)); sys.exit(sync.main())'
+        command = [str(PYTHON), '-B', '-X', 'utf8', '-c', bootstrap, str(REPO / 'tools'), str(library_root), *args]
     with logfile.open('w', encoding='utf-8') as log:
         proc = subprocess.Popen(command, cwd=REPO, env=env, stdout=log, stderr=subprocess.STDOUT, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
         return proc.wait()
@@ -473,7 +513,7 @@ def fingerprint(paths):
 
 def paper_fingerprint(paper):
     folder = LIBRARY / 'papers' / paper['citekey']
-    paths = [folder / f'{paper['citekey']}_{suffix}.md' for suffix in ('EN', 'MD', 'ZH', 'Note')]
+    paths = [folder / f"{paper['citekey']}_{suffix}.md" for suffix in ('EN', 'MD', 'ZH', 'Note')]
     paths += [p for p in folder.rglob('*') if p.is_file() and (not p.name.startswith('.sync_'))]
     if any((not p.resolve().is_relative_to(folder.resolve()) for p in paths)):
         raise RuntimeError('Paper input escapes its folder')
@@ -488,7 +528,7 @@ def validate_completed_paper(paper):
     paper['qa'] = validate_paper(folder, paper['citekey'], paper['primary_pdf'], require_qc=True, require_translation=paper.get('require_translation', True))
     paper['require_translation'] = paper['qa'].get('metrics', {}).get('translation_required', paper.get('require_translation', True))
     if paper['qa']['ok']:
-        docs = {f'{paper['citekey']}_{suffix}.md': before[str(folder / f'{paper['citekey']}_{suffix}.md')] for suffix in ('EN', 'MD', 'ZH', 'Note') if before[str(folder / f'{paper['citekey']}_{suffix}.md')] is not None}
+        docs = {f"{paper['citekey']}_{suffix}.md": before[str(folder / f"{paper['citekey']}_{suffix}.md")] for suffix in ('EN', 'MD', 'ZH', 'Note') if before[str(folder / f"{paper['citekey']}_{suffix}.md")] is not None}
         if not docs or paper['qa']['metrics'].get('input_sha256') != docs:
             raise RuntimeError('QA input hashes missing or inconsistent; refusing completion')
         if paper_fingerprint(paper) != before:
@@ -570,31 +610,45 @@ def publish_indexes(staged, baseline, backup):
     return published
 
 def report_text(state):
-    lines = ['# 一键同步执行报告', '', f'- 任务：`{state['id']}`', f'- 状态：{state['status']}', f'- 开始：{state['started']}', f'- 结束：{state.get('finished', '')}', '- 模型：`bigmodel/glm-5.3-flash`（现有 max 推理配置；未绕过质检护栏）', f'- 分块并行：{state['chunk_parallel']}；全局 GLM 调用上限：2', '']
+    lines = ['# 一键同步执行报告', '', f"- 任务：`{state['id']}`", f"- 状态：{state['status']}", f"- 开始：{state['started']}", f"- 结束：{state.get('finished', '')}", '- 模型：`bigmodel/glm-5.3-flash`（现有 max 推理配置；未绕过质检护栏）', f"- 分块并行：{state['chunk_parallel']}；全局 GLM 调用上限：2", '']
     if state.get('model_config'):
         configs = state['model_config']
-        lines[6] = '- 模型（API，保留现有质检护栏）：' + '；'.join((f'{role}={configs[role]['provider']}/{configs[role]['model']} (effort={configs[role]['reasoning_effort']})' for role in model_roles(state)))
-        lines[7] = f'- 分块并行：{state['chunk_parallel']}；全局模型调用上限：2'
+        lines[6] = '- 模型（API，保留现有质检护栏）：' + '；'.join((f"{role}={configs[role]['provider']}/{configs[role]['model']} (effort={configs[role]['reasoning_effort']})" for role in model_roles(state)))
+        lines[7] = f"- 分块并行：{state['chunk_parallel']}；全局模型调用上限：2"
     if state.get('worker_resume_of'):
-        lines += [f'- 继续暂停任务：`{state['worker_resume_of']}`；只补缺失步骤，未重新整理附件。', '']
+        lines += [f"- 继续暂停任务：`{state['worker_resume_of']}`；只补缺失步骤，未重新整理附件。", '']
+    if state.get('recovered_from'):
+        lines += [f"- 遗留暂停恢复：原受阻任务 `{state['recovered_from']}`（证据核验通过后以新任务续跑；原记录未改动）。", '']
+    if state.get('model_config_source'):
+        lines += [f"- 恢复模型来源：{state['model_config_source']}" + ('（用户在预览冻结旧配置与新保存配置后显式选择）' if state['model_config_source'] == 'selected_saved' else '（沿用原任务冻结配置）'), '']
     if state.get('status') == 'paused':
         lines += ['- 已在步骤边界暂停，已完成产物与源文件哈希保存；控制器退出后可安全关机。', '']
+        if state.get('pause_failed_papers'):
+            lines += ['- 暂停时以下文献未通过验收，已按原判定转入待处理（未伪装成已暂停/已完成，恢复时不会盲目重跑）：']
+            for row in state['pause_failed_papers']:
+                lines.append(f"  - {row.get('citekey', row.get('key'))}：" + '；'.join(row.get('reasons', [])))
+            lines.append('')
     if state.get('resume_of'):
-        lines[6:8] = [f'- 仅恢复收尾，原任务：`{state['resume_of']}`；未调用论文 worker、MinerU 或 GLM。', f'- 人工审定清单：`{state.get('reviewed_changes') or '无'}`', f'- 收尾阶段：{state.get('finalize_phase', 'preflight')}']
+        lines[6:8] = [f"- 仅恢复收尾，原任务：`{state['resume_of']}`；未调用论文 worker、MinerU 或 GLM。", f"- 人工审定清单：`{state.get('reviewed_changes') or '无'}`", f"- 收尾阶段：{state.get('finalize_phase', 'preflight')}"]
     if 'translate' in state:
         lines += [f'- 本次模式：{translation_mode(state)}', '']
     for item in state.get('papers', []):
-        lines += [f'## {item.get('citekey', item.get('key'))}', '', f'- {translation_mode(item)}', '', '```json', json.dumps(item, ensure_ascii=False, indent=2), '```', '']
+        lines += [f"## {item.get('citekey', item.get('key'))}", '', f'- {translation_mode(item)}', '', '```json', json.dumps(item, ensure_ascii=False, indent=2), '```', '']
     if state.get('error'):
         lines += ['## 阻碍', '', state['error'], '']
     if state.get('deferred'):
         lines += ['## 未执行、保留待办', '']
         for item in state['deferred']:
-            lines.append(f'- {item['key']} {item.get('citekey', '')}：{'；'.join(item.get('blocked', []))}')
+            lines.append(f"- {item['key']} {item.get('citekey', '')}：{'；'.join(item.get('blocked', []))}")
+        lines.append('')
+    if state.get('needs_action'):
+        lines += ['## 待处理清单（可在任务详情选择处置动作）', '']
+        for row in state['needs_action']:
+            lines.append(f"- {row.get('citekey') or row.get('key', '')}：{'；'.join(row.get('reasons', []))}")
         lines.append('')
     for warning in state.get('warnings', []):
         lines += [f'- 注意：{warning}']
-    lines += ['', f'Library 提交：`{state.get('library_commit') or '无新提交'}`', '', '已有用户修改未提交；原始 PDF、批注和历史手稿未删除。', '全库快照读取不加文件锁；随后索引/提交期间，本批论文文件短暂只读。', '校验是确定性检查，不能替代对科学内容的人工审阅。']
+    lines += ['', f"Library 提交：`{state.get('library_commit') or '无新提交'}`", '', '已有用户修改未提交；原始 PDF、批注和历史手稿未删除。', '全库快照读取不加文件锁；随后索引/提交期间，本批论文文件短暂只读。', '校验是确定性检查，不能替代对科学内容的人工审阅。']
     return '\n'.join(lines) + '\n'
 
 def assert_unstaged():
@@ -701,7 +755,7 @@ def finalize(client, state, run, *, frozen, before_index, before, owned, source_
             row = rows.get(p['citekey'], {})
             fields = ['pdf', 'full', 'note'] + (['zh'] if paper_translation_required(p) else [])
             if any((str(row.get(k)).lower() not in ('true', '1') for k in fields)):
-                raise RuntimeError(f'{p['citekey']} 索引状态不完整：{row}')
+                raise RuntimeError(f"{p['citekey']} 索引状态不完整：{row}")
             p['index'] = {k: row.get(k) for k in fields}
         assert_unstaged()
         state['index_backup'] = str(run / 'index_backup')
@@ -719,7 +773,7 @@ def finalize(client, state, run, *, frozen, before_index, before, owned, source_
             final_guard()
             note_exclusions = set()
             for paper in state['papers']:
-                note = LIBRARY / 'papers' / paper['citekey'] / f'{paper['citekey']}_Note.md'
+                note = LIBRARY / 'papers' / paper['citekey'] / f"{paper['citekey']}_Note.md"
                 reanchored = paper.get('source_refresh', {}).get('reanchored', {})
                 if str(note) in before and str(note) not in reanchored or (str(note) not in reanchored and (not pristine_note(note, source_map[paper['key']]))):
                     note_exclusions.add(note)
@@ -784,10 +838,16 @@ def finish(state, run, report, *, commit, tools_dirty=(), discovery_ledger=None)
             state['status'] = 'attention'
             state['warnings'].append(f'待办保存失败：{e}；请保留本次 state.json 供恢复')
             write_report()
+    try:
+        from library_issues import load as load_issues, record_result, save as save_issues
+        save_issues(RUNS, record_result(load_issues(RUNS), state))
+    except Exception as e:
+        state['warnings'].append(f'问题处置台账更新失败：{e}；同步结果本身未受影响')
+        write_report()
     persist_terminal()
     ok = state['status'] == 'completed'
     try:
-        notice = notify('文献同步完成' if ok else '文献同步已暂停' if state['status'] == 'paused' else '文献同步需要处理', f'{len(state['papers'])} 篇；{state['status']}。详情：{report.name}', report)
+        notice = notify('文献同步完成' if ok else '文献同步已暂停' if state['status'] == 'paused' else '文献同步需要处理', f"{len(state['papers'])} 篇；{state['status']}。详情：{report.name}", report)
         state['notification_requested'] = bool(notice.get('requested'))
         state['notification'] = notice
     except Exception as e:
@@ -795,7 +855,7 @@ def finish(state, run, report, *, commit, tools_dirty=(), discovery_ledger=None)
         state['warnings'].append(f'通知记录失败：{e}')
     state['monitor_done'] = True
     persist_terminal()
-    print(f'{state['status']}: {report}', flush=True)
+    print(f"{state['status']}: {report}", flush=True)
     return 0 if state['status'] == 'completed' else 2
 
 def execute(client, plan):
@@ -812,7 +872,7 @@ def _execute_locked(client, plan):
         raise RuntimeError('所选文献已有暂停/恢复任务；请继续原任务，不重新准备附件')
     run = RUNS / plan['id']
     run.mkdir(parents=True, exist_ok=True)
-    report = REPORTS / f'library_sync_{plan['id']}.md'
+    report = REPORTS / f"library_sync_{plan['id']}.md"
     state = {'id': plan['id'], 'started': dt.datetime.now().isoformat(timespec='seconds'), 'status': 'running', 'papers': [], 'warnings': [], 'chunk_parallel': plan['chunk_parallel'], 'report': str(report), 'requested': [], 'translate': translate, 'deferred': plan.get('deferred', []), 'monitor_done': False, 'controller': progress.process_identity(os.getpid()), 'phase': 'preflight', 'control_schema': 1, 'commit': plan['commit'], 'workers': plan['workers'], 'planned_papers': [{k: p.get(k, '') for k in ('key', 'citekey', 'title')} for p in plan['items']]}
     if plan.get('model_config'):
         from model_api import validate_config
@@ -899,7 +959,7 @@ def _execute_locked(client, plan):
             state['papers'].append(value)
             checkpoint()
             if value.get('status') != 'applied' or value.get('blocked') or value.get('redo_required'):
-                raise RuntimeError(f'{p['key']} 附件/元数据未验收或需明确重跑：{value}')
+                raise RuntimeError(f"{p['key']} 附件/元数据未验收或需明确重跑：{value}")
             if value.get('key') != p['key'] or (not p.get('metadata', {}).get('refresh') and value.get('citekey') != p['citekey']):
                 raise RuntimeError('Intake result does not match the approved item/citekey')
             if p['key'] in continue_verified:
@@ -935,7 +995,7 @@ def _execute_locked(client, plan):
                     front = yaml.safe_load(text.split('---', 2)[1]) if text.startswith('---') else {}
                     if not isinstance(front, dict) or not front.get('qc'):
                         raise RuntimeError(f'{ck} 未质检原文有用户修改，不自动覆盖')
-        owned = [LIBRARY / 'papers' / p['citekey'] / f'{p['citekey']}_{s}.md' for p in state['papers'] for s in ('EN', 'MD', 'ZH', 'Note')]
+        owned = [LIBRARY / 'papers' / p['citekey'] / f"{p['citekey']}_{s}.md" for p in state['papers'] for s in ('EN', 'MD', 'ZH', 'Note')]
         before = fingerprint(owned)
         before.update({str(p): refresh_before[str(p)] for p in owned if str(p) in refresh_before})
         state['baseline'] = {'schema': 1, 'library_dirty': sorted(dirty), 'tools_dirty': sorted(tools_dirty), 'before': before, 'before_index': before_index, 'owned': [str(p) for p in owned]}
@@ -967,7 +1027,7 @@ def _execute_locked(client, plan):
                 p['exit_code'] = future.result()
                 p['log'] = str(logfile)
                 text = logfile.read_text(encoding='utf-8', errors='replace')
-                p['qc_log'] = [line for line in text.splitlines() if re.search('rejected|reject |chunk dropped|qc OK|qc done|qc:|accepted|SUMMARY|!!', line, re.I)]
+                p['qc_log'] = [line for line in text.splitlines() if re.search('rejected|reject |chunk dropped|qc OK|qc done|qc:|accepted|repair|SUMMARY|!!', line, re.I)]
                 if p['exit_code'] == 75:
                     p['progress_phase'] = 'paused'
                     checkpoint()
@@ -978,7 +1038,7 @@ def _execute_locked(client, plan):
                 p['progress_phase'] = 'validated' if p['qa']['ok'] else 'failed'
                 if p['qa']['ok']:
                     folder = LIBRARY / 'papers' / p['citekey']
-                    note = str(folder / f'{p['citekey']}_Note.md')
+                    note = str(folder / f"{p['citekey']}_Note.md")
                     expected_note = p.get('source_refresh', {}).get('reanchored', {}).get(note, before.get(note))
                     if note in before and expected_note != qa_before[note]:
                         raise RuntimeError('Existing user Note changed during workers; never auto-commit it')
@@ -988,6 +1048,9 @@ def _execute_locked(client, plan):
                     state['qa_frozen'] = dict(frozen)
                 checkpoint()
         from library_control import seal_pause, finalize_barrier
+        if not finalize_barrier(state, run, checkpoint):
+            seal_pause(state, run)
+            return finish(state, run, report, commit=False, tools_dirty=tools_dirty, discovery_ledger=discovery_ledger)
         if not all((p.get('exit_code') in (0, 75) for p in state['papers'])):
             raise RuntimeError('worker 失败；未将失败伪装成暂停')
         bad = [p for p in state['papers'] if p['exit_code'] == 0 and (not p.get('qa', {}).get('ok'))]
@@ -995,9 +1058,6 @@ def _execute_locked(client, plan):
             state['phase'] = 'qa'
             checkpoint()
             raise RuntimeError('产物验收未通过；未重建索引/提交；详见各篇 qa 和日志')
-        if not finalize_barrier(state, run, checkpoint):
-            seal_pause(state, run)
-            return finish(state, run, report, commit=False, tools_dirty=tools_dirty, discovery_ledger=discovery_ledger)
         if any((p['exit_code'] for p in state['papers'])):
             raise RuntimeError('worker 暂停但缺少暂停请求；未重建索引/提交')
         finalize(client, state, run, frozen=frozen, before_index=before_index, before=before, owned=owned, source_map=source_map, dirty=dirty, commit=plan['commit'], env=env, checkpoint=checkpoint)
@@ -1022,7 +1082,7 @@ def setup(client, apply=False):
 def confirm_background(plan):
     translation_enabled(plan)
     if not plan['items']:
-        print(f'暂无可执行条目；保留 {len(plan.get('deferred', []))} 篇待办。未启动后台任务，未写入确认计划或台账。', flush=True)
+        print(f"暂无可执行条目；保留 {len(plan.get('deferred', []))} 篇待办。未启动后台任务，未写入确认计划或台账。", flush=True)
         return 2
     if any((p.get('blocked') for p in plan['items'])):
         print('预检未通过：请查看上述阻碍。未启动后台任务，未写入确认计划或台账。', flush=True)
@@ -1087,6 +1147,7 @@ def main(argv=None):
     selectors.add_argument('--resume-run', metavar='RUN_ID', help='continue only unfinished work from a sealed pause')
     ap.add_argument('--attempt-id', help=argparse.SUPPRESS)
     ap.add_argument('--finalize-only', action='store_true', help=argparse.SUPPRESS)
+    ap.add_argument('--recover-legacy', action='store_true', help=argparse.SUPPRESS)
     ap.add_argument('--reviewed-changes', type=Path, metavar='PATH')
     g = ap.add_mutually_exclusive_group()
     g.add_argument('--apply', action='store_true')
@@ -1101,8 +1162,10 @@ def main(argv=None):
         args.primary_keys[args.keys] = args.primary_key
     if (args.pause or args.resume_run) and any((args.setup, args.interactive, args.status, args.watch, args.execute_plan, args.swap, args.no_translate, args.no_commit, args.reviewed_changes, args.limit)):
         ap.error('Pause/resume uses the saved task; do not combine with another mode or configuration override')
-    if (args.attempt_id or args.finalize_only) and (not args.resume_run):
-        ap.error('--attempt-id/--finalize-only require --resume-run')
+    if (args.attempt_id or args.finalize_only or args.recover_legacy) and (not args.resume_run):
+        ap.error('--attempt-id/--finalize-only/--recover-legacy require --resume-run')
+    if args.recover_legacy and (args.finalize_only or args.reviewed_changes):
+        ap.error('--recover-legacy cannot combine with --finalize-only/--reviewed-changes')
     if args.pause:
         from library_control import request_pause
         if args.apply:
@@ -1114,7 +1177,7 @@ def main(argv=None):
     if args.resume_run:
         from library_control import resume_run
         from zotero_local import Client
-        return resume_run(Client(apply=False), args.resume_run, apply=args.apply, attempt=args.attempt_id, finalize_only=args.finalize_only)
+        return resume_run(Client(apply=False), args.resume_run, apply=args.apply, attempt=args.attempt_id, finalize_only=args.finalize_only, recover_legacy=args.recover_legacy)
     if args.reviewed_changes and (not args.resume_finalize):
         ap.error('--reviewed-changes requires --resume-finalize')
     if args.resume_finalize and any((args.keys, args.since, args.collection, args.limit, args.setup, args.interactive, args.status, args.execute_plan, args.swap, args.no_commit, args.no_translate)):

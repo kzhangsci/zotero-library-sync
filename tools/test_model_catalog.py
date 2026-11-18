@@ -162,7 +162,7 @@ class CatalogTests(OfflineCase):
         self.assertEqual(result["models"], ["glm-5.3", "glm-5.3-flash"])
         self.assertEqual(candidate, before)
 
-    def test_unconfirmed_coding_profile_allows_only_anonymous_document_discovery(self):
+    def test_unconfirmed_coding_profile_is_a_trusted_v2_endpoint(self):
         candidate = {**api.profile_defaults()["glm"], "model": "glm-5.3", "endpoint_confirmed": False,
                      "base_url": "https://open.bigmodel.cn/api/coding/paas/v4", "models_url": ""}
         before = copy.deepcopy(candidate)
@@ -171,20 +171,19 @@ class CatalogTests(OfflineCase):
                 patch.object(api, "_request", side_effect=AssertionError("no credentialed HTTP")):
             validated = api.validate_profile(candidate, for_models=True)
             self.assertEqual(validated, candidate)
+            self.assertEqual(api.validate_profile(candidate), validated)
             result = api.model_choices(profile=validated, catalog=instance)
             self.assertEqual(result["endpoint_kind"], "coding_plan")
             self.assertEqual(result["models"], ["glm-5.3", "glm-5.3-flash"])
             self.fetch.assert_called_once_with(catalog.GLM_CODING_DOCUMENT)
             self.assertEqual(api.highest_parameters(candidate)["max_tokens"], 131072)
-            configured = {**config(), "qc": candidate}
-            actions = (lambda: api.validate_profile(candidate), lambda: api.validate_config(configured),
-                       lambda: api.save_config(configured), lambda: api.test_connection(profile=candidate),
-                       lambda: api.create_backend(candidate, "qc"), lambda: api.RequestsTransport(profile=candidate))
-            for action in actions:
-                with self.assertRaisesRegex(api.ConfigError, "^endpoint_confirmation_required$"):
-                    action()
+            api.RequestsTransport(profile=candidate)  # no confirmation gate before a credential read
             with self.assertRaisesRegex(api.UnsupportedOperation, "^model_listing_not_supported$"):
                 api.list_models(profile=candidate)
+        configured = {**config(), "qc": candidate}
+        self.assertEqual(api.validate_config(configured)["qc"], validated)
+        self.assertEqual(api.save_config(configured, key_store=self.store)["qc"], validated)
+        api.create_backend(candidate, "qc", key_store=self.store)
         self.assertEqual(candidate, before)
 
     def test_anonymous_coding_exception_is_exact_and_cannot_enable_custom_listing(self):
@@ -379,6 +378,43 @@ class HighestParametersTests(OfflineCase):
         self.assertEqual(api.highest_parameters(candidate, metadata)["max_tokens"], 12345)
         self.assertEqual(api.highest_parameters(candidate, {"max_output_tokens": True}), {})
         self.assertEqual(api.highest_parameters(candidate, {"effort_levels": ["custom-future"]}), {})
+
+    def test_recommended_defaults_are_high_with_documented_fallback_only(self):
+        # User preference: thinking ON + effort high, strictly from each
+        # model's documented set. Official default (GLM-5.3: max) and maximum
+        # stay separate; nothing is invented and options are never removed.
+        self.assertEqual(catalog.recommended_effort(["low", "high", "max"]), "high")
+        self.assertEqual(catalog.recommended_effort(["low", "medium"]), "medium")
+        self.assertEqual(catalog.recommended_effort(["none", "minimal", "max"]), "max")
+        self.assertIsNone(catalog.recommended_effort(["none", "minimal"]))
+        self.assertIsNone(catalog.recommended_effort(["low", "future-effort"]))
+        for provider, model, base in (("glm", "glm-5.3", api.BASE_URLS["glm"]),
+                                       ("glm", "glm-5.2", api.BASE_URLS["glm"]),
+                                       ("glm", "glm-5.3", api.GLM_CODING_BASE_URL),
+                                       ("deepseek", "deepseek-flash", None)):
+            candidate = {**api.profile_defaults()[provider], "model": model}
+            if base:
+                candidate["base_url"] = base
+            with patch.object(api, "_store", side_effect=AssertionError("no credentials")):
+                recommended = api.recommended_parameters(candidate)
+                highest = api.highest_parameters(candidate)
+            self.assertEqual(recommended, {"max_tokens": 393216 if provider == "deepseek" else 131072,
+                                           "reasoning_effort": "high", "thinking": "enabled"})
+            self.assertEqual(highest["reasoning_effort"], "max")  # maximum stays distinct
+            self.assertEqual(candidate["reasoning_effort"], "high")  # pure patch, nothing mutated
+        campus = {**api.profile_defaults()["tongji"], "model": "DeepSeek-V4.1-Flash"}
+        self.assertEqual(api.recommended_parameters(campus, {"effort_levels": ["none", "high"]}),
+                         {"reasoning_effort": "high"})  # Tongji sends no thinking field
+        self.assertEqual(api.recommended_parameters(campus, {"effort_levels": ["low", "medium"]}),
+                         {"reasoning_effort": "medium"})
+        self.assertEqual(api.recommended_parameters(campus, {"effort_levels": ["none"]}), {})
+        # Custom endpoints and unknown models never gain official recommendations.
+        for changes in ({"base_url": "https://custom.example/v1", "endpoint_confirmed": True},
+                        {"model": "glm-future"}):
+            self.assertEqual(api.recommended_parameters({**api.profile_defaults()["glm"], **changes}), {})
+        custom = {**api.profile_defaults()["glm"], "model": "glm-5.3",
+                  "base_url": "https://custom.example/v1", "endpoint_confirmed": True}
+        self.assertEqual(api.recommended_parameters(custom, {"max_output_tokens": 8192}), {"max_tokens": 8192})
 
     def test_legacy_profile_load_defaults_and_cache_identity_stay_unchanged(self):
         for provider in api.ENDPOINTS:

@@ -2,21 +2,25 @@
 from __future__ import annotations
 import argparse
 import datetime as dt
+import hashlib
 import json
 import os
 import re
 import shutil
 import sys
+import tempfile
 import time
 import urllib.parse
 import urllib.request
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import fix_latex_spacing
 import qc_glm
 from common import REPORTS, add_common_args, year_of, zotero_data_dir, sha256
 API = 'http://127.0.0.1:23119/api/users/0'
+import library_qa
+from library_qa import label_image_paragraph
 from library_paths import LIBRARY as LIB, GLOSSARY, MINERU_OUT
 SUFFIXES = ('_ZH', '_EN', '_MD', '_Note')
 CJK = re.compile('[一-鿿]')
@@ -25,7 +29,7 @@ CACHE = REPORTS / '_cache'
 SNAPSHOT = CACHE / 'zotero_snapshot.json'
 FAIL_MEMO = CACHE / 'sync_failures.json'
 CODEX_FLAG = CACHE / '_codex_exhausted.txt'
-QC_TRASH = LIB / '.trash' / f'qc_glm_{dt.date.today().strftime('%Y%m%d')}'
+QC_TRASH = LIB / '.trash' / f"qc_glm_{dt.date.today().strftime('%Y%m%d')}"
 STOP_FILE = CACHE / 'sync_stop.txt'
 NO_TRANSLATE_LIST = REPORTS / 'sync_no_translate.txt'
 PREPARSED_CSV = REPORTS / 'mineru_preparsed.csv'
@@ -49,7 +53,7 @@ def load_zotero(log=print, snapshot_max_age: int=0) -> tuple[dict, dict, dict]:
     if snapshot_max_age > 0 and SNAPSHOT.is_file() and (time.time() - SNAPSHOT.stat().st_mtime < snapshot_max_age * 60):
         snap = json.loads(SNAPSHOT.read_text(encoding='utf-8'))
         items, cols_raw = (snap['items'], snap['collections'])
-        log(f'- Zotero snapshot from {snap.get('time')} (younger than {snapshot_max_age} min)')
+        log(f"- Zotero snapshot from {snap.get('time')} (younger than {snapshot_max_age} min)")
         return _index_zotero(items, cols_raw)
     try:
         items = api_all('/items')
@@ -65,7 +69,7 @@ def load_zotero(log=print, snapshot_max_age: int=0) -> tuple[dict, dict, dict]:
         if not SNAPSHOT.is_file():
             raise
         snap = json.loads(SNAPSHOT.read_text(encoding='utf-8'))
-        log(f'!! Zotero API unavailable ({str(e)[:80]}); using snapshot from {snap.get('time')}')
+        log(f"!! Zotero API unavailable ({str(e)[:80]}); using snapshot from {snap.get('time')}")
         items, cols_raw = (snap['items'], snap['collections'])
     return _index_zotero(items, cols_raw)
 
@@ -151,20 +155,39 @@ def creators_str(cr: list[dict]) -> str:
 
 def info_callout(d: dict, ck: str, key: str) -> str:
     pub = d.get('publicationTitle') or d.get('proceedingsTitle') or d.get('bookTitle') or d.get('university') or d.get('repository') or ''
-    vol = ' '.join((x for x in (d.get('volume') and f'{d['volume']}', d.get('issue') and f'({d['issue']})', d.get('pages') and f'{d['pages']}') if x))
+    vol = ' '.join((x for x in (d.get('volume') and f"{d['volume']}", d.get('issue') and f"({d['issue']})", d.get('pages') and f"{d['pages']}") if x))
     doi = d.get('DOI') or ''
-    return f'> [!info] 论文信息\n> **citekey**：{ck}\n> **题名**：{d.get('title', '')}\n> **作者**：{creators_str(d.get('creators', []))}\n> **年份 / 来源**：{year_of(d)} / {pub} {vol}\n> **DOI**：{doi}\n> **Zotero**：[打开条目](zotero://select/library/items/{key})\n'
+    return f"> [!info] 论文信息\n> **citekey**：{ck}\n> **题名**：{d.get('title', '')}\n> **作者**：{creators_str(d.get('creators', []))}\n> **年份 / 来源**：{year_of(d)} / {pub} {vol}\n> **DOI**：{doi}\n> **Zotero**：[打开条目](zotero://select/library/items/{key})\n"
 
 def lock_path(folder: Path, step: str) -> Path:
     return folder / f'.sync_{step}.lock'
+_windows_locks = {}
 
 def acquire(folder: Path, step: str, worker: str) -> bool:
     folder.mkdir(parents=True, exist_ok=True)
     p = lock_path(folder, step)
+    if os.name == 'nt':
+        from library_sync import guarded_file, release_legacy_paper_lock
+        for attempt in range(2):
+            handle = guarded_file(p, writable=True, create=True, delete_on_close=True)
+            try:
+                stream = handle.__enter__()
+            except (FileExistsError, PermissionError):
+                if attempt == 0 and release_legacy_paper_lock(p, own_pid=os.getpid()):
+                    continue
+                return False
+            try:
+                stream.write(f"{worker} {dt.datetime.now().isoformat(timespec='seconds')}".encode())
+                stream.flush()
+                _windows_locks[p] = (worker, handle)
+            except BaseException:
+                handle.__exit__(*sys.exc_info())
+                raise
+            return True
     for _ in range(2):
         try:
             fd = os.open(p, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            os.write(fd, f'{worker} {dt.datetime.now().isoformat(timespec='seconds')}'.encode('utf-8'))
+            os.write(fd, f"{worker} {dt.datetime.now().isoformat(timespec='seconds')}".encode('utf-8'))
             os.close(fd)
             return True
         except FileExistsError:
@@ -182,6 +205,12 @@ def acquire(folder: Path, step: str, worker: str) -> bool:
 
 def release(folder: Path, step: str, worker: str) -> None:
     p = lock_path(folder, step)
+    if os.name == 'nt':
+        entry = _windows_locks.get(p)
+        if entry and entry[0] == worker:
+            del _windows_locks[p]
+            entry[1].__exit__(None, None, None)
+        return
     try:
         if p.read_text(encoding='utf-8', errors='ignore').split(' ', 1)[0] == worker:
             p.unlink()
@@ -276,7 +305,7 @@ class Backend:
                 return text
             except CodexQuotaError as e:
                 CODEX_FLAG.parent.mkdir(parents=True, exist_ok=True)
-                CODEX_FLAG.write_text(f'{dt.datetime.now().isoformat(timespec='seconds')} {e}', encoding='utf-8')
+                CODEX_FLAG.write_text(f"{dt.datetime.now().isoformat(timespec='seconds')} {e}", encoding='utf-8')
                 self.log(f'!! codex quota exhausted -> rest of this run uses {FALLBACK_MODEL}: {str(e)[:200]}')
                 self.model = FALLBACK_MODEL
             except CodexError as e:
@@ -323,36 +352,40 @@ def split_paragraphs(body: str, max_chars: int=3500) -> list[list[str]]:
     if cur:
         chunks.append(cur)
     return chunks
+ENVELOPE_OPEN, ENVELOPE_CLOSE = ('⟦', '⟧')
+ENVELOPE_LINE = re.compile('(?m)^[ \\t]*⟦[ \\t]*(\\d+)[ \\t]*⟧[ \\t]*')
+BRACKET_LINE = re.compile('(?m)^[ \\t]*(?:\\[(\\d+)\\]|【(\\d+)】)[ \\t]*')
+NUMERIC_LINE = re.compile('(?m)^[ \\t]*(\\d+)[.)][ \\t]+')
 
 def translate_chunk(paras: list[str], glossary: str, be: Backend) -> list[str]:
-    numbered = '\n\n'.join((f'[{i + 1}]\n{p}' for i, p in enumerate(paras)))
+    numbered = '\n\n'.join((f'{ENVELOPE_OPEN}{i + 1}{ENVELOPE_CLOSE}\n{p}' for i, p in enumerate(paras)))
     src = '日文' if len(KANA.findall(numbered)) >= 0.05 * max(1, len(numbered)) else '英文'
-    prompt = f'你是物理海洋学与海洋地球物理领域的学术译者。把下面编号的{src}段落逐段译成简体中文，要求：\n1. 严格一一对应，输出与输入相同数量的段落，每段以同样的编号 [n] 开头，不合并、不拆分、不省略；\n2. 图片链接 ![](...)、公式（$...$ / $$...$$）、表格结构、引用标记（如 (Smith et al., 2020)、[12]）原样保留；图注和表注要译成中文（Fig. 1 译作 图 1）；Markdown 标题保留井号；\n3. 术语按下列对照表翻译，表外术语按学界通行译法，首次出现可括注英文；\n4. 只输出译文，不加解释。\n\n术语表：\n' + (glossary or '（无）') + f'\n\n{src}段落：\n' + numbered
+    prompt = f'你是物理海洋学与海洋地球物理领域的学术译者。把下面编号的{src}段落逐段译成简体中文，要求：\n1. 严格一一对应，输出与输入相同数量的段落，每段先单独一行给出同样的编号 {ENVELOPE_OPEN}n{ENVELOPE_CLOSE}，再换行给译文，不合并、不拆分、不省略；不要用 [n] 当编号（[n] 是文献原有的引用编号，只能按原样保留在译文正文里）；\n2. 图片链接 ![](...)、公式（$...$ / $$...$$）、表格结构、引用标记（如 (Smith et al., 2020)、[12]）原样保留；图注和表注要译成中文（Fig. 1 译作 图 1）；Markdown 标题保留井号；\n3. 术语按下列对照表翻译，表外术语按学界通行译法，首次出现可括注英文；\n4. 只输出译文，不加解释。\n\n术语表：\n' + (glossary or '（无）') + f'\n\n{src}段落：\n' + numbered
 
-    def parse(text: str) -> list[str]:
-        markers = list(re.finditer('(?m)^[ \\t]*(?:\\[(\\d+)\\]|【(\\d+)】)[ \\t]*', text))
-        if not markers:
-            markers = list(re.finditer('(?m)^[ \\t]*(\\d+)[.)][ \\t]+', text))
-        out = {}
-        for i, marker in enumerate(markers):
-            num = next((g for g in marker.groups() if g))
-            end = markers[i + 1].start() if i + 1 < len(markers) else len(text)
-            out[int(num)] = text[marker.end():end].strip()
-        res = [out.get(k + 1, '') for k in range(len(paras))]
-        if any((not r for r in res)):
-            blocks = [b.strip() for b in re.split('\\n\\s*\\n', text.strip()) if b.strip()]
-            if len(blocks) == len(paras):
-                res = blocks
-        return res
+    def parse(text: str) -> list[str] | None:
+        expected = list(range(1, len(paras) + 1))
+        for regex in (ENVELOPE_LINE, BRACKET_LINE, NUMERIC_LINE):
+            markers = list(regex.finditer(text))
+            if not markers:
+                continue
+            numbers = [int(next((g for g in m.groups() if g))) for m in markers]
+            if numbers != expected:
+                return None
+            blocks = []
+            for k, marker in enumerate(markers):
+                end = markers[k + 1].start() if k + 1 < len(markers) else len(text)
+                blocks.append(text[marker.end():end].strip())
+            return blocks if all(blocks) else None
+        return None
 
     def parse_one(text: str) -> str:
-        t = re.sub('(?m)^\\s*(?:\\[1\\]|【1】|1[.)]\\s)\\s*', '', text.strip(), count=1).strip()
+        t = re.sub(f'(?m)^\\s*(?:{ENVELOPE_OPEN}1{ENVELOPE_CLOSE}|\\[1\\]|【1】|1[.)]\\s)\\s*', '', text.strip(), count=1).strip()
         return '' if len(t) < 400 and STALL_RE.search(t) else t
     raw_dir = CACHE / 'glm_raw'
     raw_dir.mkdir(parents=True, exist_ok=True)
-    last_err, bad_format, backend_errs = ('', False, 0)
+    last_err, backend_errs = ('', 0)
     for attempt in range(3):
-        p = prompt + ('\n\n（上一次回复没有按编号 [n] 逐段给出译文。附件/上文已经是全部待译文本，不要核对或读取任何文件，不要说稍后给出：现在就输出全部译文，严格每段以 [n] 开头，n 从 1 到 ' + str(len(paras)) + '。）' if bad_format else '')
+        p = prompt + (f'\n\n（上一次回复没有按编号 {ENVELOPE_OPEN}n{ENVELOPE_CLOSE} 逐段给出可解析的译文。附件/上文已经是全部待译文本，不要核对或读取任何文件，不要说稍后给出：现在就输出全部译文，从 {ENVELOPE_OPEN}1{ENVELOPE_CLOSE} 到 {ENVELOPE_OPEN}{len(paras)}{ENVELOPE_CLOSE} 每段一行编号，一段不落；[n]、(n) 这类文献原有编号只出现在译文正文里。）' if attempt else '')
         try:
             text = be.ask(p)
         except Exception as e:
@@ -363,23 +396,20 @@ def translate_chunk(paras: list[str], glossary: str, be: Backend) -> list[str]:
             continue
         (raw_dir / f'{time.time_ns()}_{os.getpid()}_{attempt}.txt').write_text(text, encoding='utf-8')
         res = parse(text)
-        missing = [k + 1 for k, r in enumerate(res) if not r]
         src_len = sum((len(x) for x in paras))
-        if not missing and len(text) < 400 and STALL_RE.search(text):
-            missing = ['stall']
-        if not missing:
+        if res and (not (len(text) < 400 and STALL_RE.search(text))):
             return res
-        bad_format = True
-        last_err = f'translation missing paragraphs {missing[:10]} (attempt {attempt + 1}, {len(text)} chars for {src_len} source chars)'
+        last_err = f'translation missing paragraphs or unparseable envelopes (attempt {attempt + 1}, {len(text)} chars for {src_len} source chars)'
     if backend_errs >= 3:
         be.log(f'!! chunk of {len(paras)} paragraphs refused 3x by the backend ({last_err[:120]}); falling back to per-paragraph')
+        head = prompt.split(f'{src}段落：')[0] + f'{src}段落：\n{ENVELOPE_OPEN}1{ENVELOPE_CLOSE}\n'
         out = []
         for p in paras:
             if p.startswith('![') or p.startswith('<table') or p.startswith('$$') or (len(p) < 20):
                 out.append(p)
                 continue
             try:
-                one = be.ask(prompt.split(f'{src}段落：')[0] + f'{src}段落：\n[1]\n' + p)
+                one = be.ask(head + p)
                 r1 = parse_one(one)
                 out.append(r1 if r1 else '*（此段模型拒绝翻译，见上方原文）*')
             except Exception as e:
@@ -422,24 +452,40 @@ def build_zh(en_body: str, d: dict, ck: str, key: str, be: Backend, glossary_row
 
     def run_chunk(paras):
         return translate_cached(paras, glossary_for('\n'.join(paras), glossary_rows), be, translate_chunk, cache_dir)
-    out = [f'# {d.get('title', ck)}', '', info_callout(d, ck, key), '']
+
+    def emit(groups):
+        keeps = [[p for p in group if not label_image_paragraph(p)] for group in groups]
+        todo = [keep for keep in keeps if keep]
+        if workers > 1 and len(todo) > 1:
+            with ThreadPoolExecutor(max_workers=min(workers, len(todo))) as pool:
+                answers = list(pool.map(run_chunk, todo))
+        else:
+            answers = [run_chunk(keep) for keep in todo]
+        pairs, pos = ([], 0)
+        for group, keep in zip(groups, keeps):
+            if not keep:
+                pairs.extend(((p, None) for p in group))
+                continue
+            zh = answers[pos]
+            pos += 1
+            k = 0
+            for p in group:
+                if label_image_paragraph(p):
+                    pairs.append((p, None))
+                else:
+                    pairs.append((p, zh[k]))
+                    k += 1
+        return pairs
+    out = [f"# {d.get('title', ck)}", '', info_callout(d, ck, key), '']
     for seg, translate in split_reference_block(en_body):
         if not translate:
             if seg.strip():
                 out += ['', seg.strip(), '']
             continue
         seg = re.sub('(?m)^(!\\[[^\\n]*\\)[ \\t]*)\\n(?=\\S)', '\\1\\n\\n', seg)
-        pairs = []
-        groups = split_paragraphs(seg)
-        if workers == 1 or len(groups) < 2:
-            for paras in groups:
-                pairs.extend(zip(paras, run_chunk(paras)))
-        else:
-            with ThreadPoolExecutor(max_workers=min(workers, len(groups))) as pool:
-                for paras, zh in zip(groups, pool.map(run_chunk, groups)):
-                    pairs.extend(zip(paras, zh))
-        for en, zh in pairs:
+        for en, zh in emit(split_paragraphs(seg)):
             if en.startswith('#'):
+                zh = fix_latex_spacing.fix_text(zh)[0]
                 out += [zh if zh.startswith('#') else '#' + zh.lstrip('#'), '']
                 continue
             if en.startswith('!['):
@@ -448,12 +494,299 @@ def build_zh(en_body: str, d: dict, ck: str, key: str, be: Backend, glossary_row
             if en.startswith('$$') and en.rstrip().endswith('$$'):
                 out += [en, '']
                 continue
+            if zh is None:
+                out += [en, '']
+                continue
+            zh = fix_latex_spacing.fix_text(zh)[0]
             lost = [m for m in IMG_LINK.findall(en) if m not in zh]
             if lost:
                 zh = zh.rstrip() + '\n\n' + '\n\n'.join(lost)
             q = '\n'.join(('> ' + l for l in en.splitlines()))
             out += ['> [!quote]- en', q, '', zh, '']
     return '\n'.join(out)
+REPAIRABLE_QA_CODES = frozenset({'quote_source', 'translation_marker', 'structure_coverage', 'image_coverage', 'translation_empty', 'quote_coverage', 'translation_orphan'})
+TRANSLATION_QA_CODES = REPAIRABLE_QA_CODES | frozenset({'zh_preamble', 'quote_format', 'translation_placeholder', 'references_changed', 'formula_mismatch', 'formula_unbalanced'})
+CAPTION_SPLIT = re.compile('(?m)^(!\\[[^\\n]*\\)[ \\t]*)\\n(?=\\S)')
+QA_MARKER = re.compile('^\\s*(?:#{1,6}\\s*)?(\\[\\d+\\]|【\\d+】|\\d+\\)|\\d+\\.(?!\\d))(?:[ \\t]*(.*))?$')
+QA_SOURCE_BUDGET = re.compile('(?m)^[ \\t]*(?:#{1,6}[ \\t]*)?(\\[\\d+\\]|【\\d+】|\\d+\\)|\\d+\\.(?!\\d))')
+
+def lock_owned(folder: Path, step: str, worker: str) -> bool:
+    p = lock_path(folder, step)
+    if os.name == 'nt':
+        entry = _windows_locks.get(p)
+        return bool(entry and entry[0] == worker)
+    try:
+        return p.read_text(encoding='utf-8', errors='ignore').split(' ', 1)[0] == worker
+    except OSError:
+        return False
+
+def zh_recheck(folder: Path, ck: str, full_name: str) -> list[str]:
+    if not (folder / f'{ck}_ZH.md').is_file() or not (folder / full_name).is_file():
+        return []
+    result = library_qa.validate_paper(folder, ck, f'{ck}.pdf', require_qc=False, require_translation=True)
+    return sorted({e['code'] for e in result['errors']} & REPAIRABLE_QA_CODES)
+
+def _repair_norm(text: str) -> str:
+    return re.sub('\\s+', '', text).replace('◦', '°')
+
+def _short(text: str, n: int=40) -> str:
+    return re.sub('\\s+', ' ', text)[:n]
+
+def _strip_leaked_envelope(translation: str, src_para: str, chunk_position: int) -> str | None:
+    lines = translation.splitlines()
+    if not lines or not chunk_position:
+        return None
+    standalone = re.sub('^\\s*#{1,6}\\s*', '', lines[0]).strip()
+    match = re.fullmatch('(?:\\[(\\d+)\\]|【(\\d+)】)', standalone)
+    if not match or int(next((x for x in match.groups() if x))) != chunk_position:
+        return None
+    remaining = '\n'.join(lines[1:]).strip()
+    if not remaining:
+        return None
+    source_budget = Counter((m.group(1) for m in QA_SOURCE_BUDGET.finditer(src_para)))
+    actual_budget = Counter((m.group(1) for m in QA_SOURCE_BUDGET.finditer(remaining)))
+    if actual_budget != source_budget:
+        return None
+    return remaining
+
+def _drop_surplus_images(translation: str, src_para: str) -> str:
+    src_count = Counter((library_qa._image_key(x) for x in library_qa._images(src_para)))
+    lines = translation.splitlines()
+    while lines:
+        current = Counter((library_qa._image_key(x) for x in library_qa._images('\n'.join(lines))))
+        surplus = [k for k, n in current.items() if src_count.get(k, 0) >= 1 and n > src_count[k]]
+        last_images = library_qa._images(lines[-1]) if library_qa.image_only_line(lines[-1]) else []
+        if not surplus or not last_images or library_qa._image_key(last_images[0]) != surplus[0]:
+            break
+        lines.pop()
+    return '\n'.join(lines).rstrip()
+
+def _repair_zh_alignment(en_body: str, zh_body: str) -> tuple[str, list[str], list[str]]:
+    repairs, reasons = ([], [])
+    src_norm: dict[str, list[str]] = defaultdict(list)
+    ordered_src: list[str] = []
+    chunk_pos: dict[int, int] = {}
+    for seg, translate in split_reference_block(en_body):
+        if not translate:
+            continue
+        seg = CAPTION_SPLIT.sub('\\1\\n\\n', seg)
+        for group in split_paragraphs(seg):
+            for idx, p in enumerate(group, 1):
+                src_norm[_repair_norm(p)].append(p)
+                ordered_src.append(p)
+                chunk_pos[len(ordered_src) - 1] = idx
+    src_index = {p: i for i, p in enumerate(ordered_src)}
+    source_headings = [p for p in ordered_src if p.startswith('#')]
+    heading_position = 0
+    label_index = {_repair_norm(p): i for i, p in enumerate(ordered_src) if label_image_paragraph(p)}
+    paras = [p for p in (x.strip() for x in re.split('\\n\\s*\\n', zh_body)) if p]
+    out: list[str] = []
+    covered_after: dict[int, int] = {}
+    start = 0
+    if paras and paras[0].splitlines()[0].startswith('# '):
+        start = 2 if len(paras) > 1 and paras[1].startswith('> [!info]') else 1
+    out.extend(paras[:start])
+    i, in_refs = (start, False)
+    while i < len(paras):
+        p = paras[i]
+        first = p.splitlines()[0]
+        if REF_HEADING.match(first):
+            in_refs = True
+        elif in_refs and NEXT_HEADING.match(first) and (not REF_LIKE.search(first)):
+            in_refs = False
+        if in_refs or first != '> [!quote]- en':
+            if not in_refs and p.startswith('#') and (heading_position < len(source_headings)):
+                source_heading = source_headings[heading_position]
+                stripped = _strip_leaked_envelope(p, source_heading, chunk_pos[src_index[source_heading]])
+                if stripped is not None:
+                    p = stripped
+                    repairs.append('stripped leaked heading envelope')
+                heading_position += 1
+            norm = _repair_norm(p)
+            if not in_refs and norm in label_index:
+                covered_after[label_index[norm]] = len(out) + 1
+            out.append(p)
+            i += 1
+            continue
+        lines = p.splitlines()[1:]
+        en = '\n'.join((re.sub('^> ?', '', l) for l in lines)).strip()
+        cands = src_norm.get(_repair_norm(en), [])
+        src = cands[0] if cands and len(set(cands)) == 1 else None
+        if src is None:
+            reasons.append(f'quote not uniquely aligned to a source paragraph ({_short(en)})')
+        j, zh_parts, took_prose = (i + 1, [], False)
+        if src is not None:
+            source_images = set((library_qa._image_key(x) for x in library_qa._images(src)))
+            while j < len(paras) and (not paras[j].startswith('>')):
+                nxt = paras[j]
+                images = [library_qa._image_key(x) for x in library_qa._images(nxt)]
+                if library_qa._kind(nxt) == 'quote' and (not took_prose):
+                    zh_parts.append(nxt)
+                    took_prose = True
+                    j += 1
+                    continue
+                if images and all((t in source_images for t in images)) and (library_qa.image_only_paragraph(nxt) or not zh_parts):
+                    zh_parts.append(nxt)
+                    j += 1
+                    continue
+                break
+        if src is not None and label_image_paragraph(src):
+            panel_translation = '\n\n'.join(zh_parts)
+            panel_translation = _strip_leaked_envelope(panel_translation, src, chunk_pos.get(src_index[src], 0)) or panel_translation
+            panel_lines = [line.strip() for line in panel_translation.splitlines() if line.strip()]
+            if any((not library_qa.image_only_line(line) and (not library_qa.LABEL_LINE.fullmatch(line)) for line in panel_lines)):
+                reasons.append(f'label+image unit has translated prose; kept as is ({_short(src)})')
+                out.append(p)
+                i += 1
+                continue
+            out.append(src)
+            repairs.append(f'restored label+image unit from source ({_short(src)})')
+            covered_after[src_index[src]] = len(out)
+            i = j
+            continue
+        if src is not None and src != en:
+            out.append('> [!quote]- en\n' + '\n'.join(('> ' + l for l in src.splitlines())))
+            repairs.append(f'restored EN quote text from source ({_short(src)})')
+        else:
+            out.append(p)
+        if zh_parts and src is not None:
+            text = '\n\n'.join(zh_parts)
+            if library_qa.LABEL_LINE.fullmatch(src.strip()):
+                label_only = re.sub('(?m)^\\s*(?:\\[\\d+\\]|【\\d+】)\\s*$', '', text).strip()
+                if label_only == src.strip():
+                    text = src
+                    zh_parts = [src]
+                    repairs.append('restored standalone panel label')
+            stripped = _strip_leaked_envelope(text, src, chunk_pos.get(src_index[src], 0))
+            if stripped is not None:
+                text, zh_parts = (stripped, [stripped])
+                repairs.append(f'stripped leaked envelope marker ({_short(src)})')
+            trimmed = _drop_surplus_images(text, src)
+            if trimmed != text:
+                zh_parts = [trimmed]
+                repairs.append(f'removed surplus image copy ({_short(src)})')
+        out.extend(zh_parts)
+        if src is not None:
+            covered_after[src_index[src]] = len(out)
+        i = max(j, i + 1)
+    out_norm = {_repair_norm(x) for x in out}
+    insertions: dict[int, list[str]] = defaultdict(list)
+    for k, para in enumerate(ordered_src):
+        if not label_image_paragraph(para) or _repair_norm(para) in out_norm:
+            continue
+        prev = next((a for a in range(k - 1, -1, -1) if a in covered_after), None)
+        nxt = next((b for b in range(k + 1, len(ordered_src)) if b in covered_after), None)
+        if prev is None or nxt is None or any((a in covered_after for a in range(prev + 1, nxt))):
+            reasons.append(f'missing label+image unit has no unique insertion point ({_short(para)})')
+            continue
+        insertions[covered_after[prev]].append(para)
+        repairs.append(f'restored missing label+image unit from source ({_short(para)})')
+    for pos in sorted(insertions):
+        for para in reversed(insertions[pos]):
+            out.insert(pos, para)
+    return ('\n\n'.join(out) + '\n', repairs, reasons)
+
+def _repair_translation_units(en_body, zh_body, title, backend_factory, glossary_rows):
+    from glm_concurrency import translate_cached
+    actual = library_qa._actual_units(zh_body, title, [], 'candidate')
+    if any((unit['kind'] == 'orphan' for unit in actual)):
+        raise ValueError('Unassociated translated prose requires review')
+    quotes = defaultdict(list)
+    headings = iter((unit for unit in actual if unit['kind'] == 'heading'))
+    for unit in actual:
+        if unit['kind'] == 'quote':
+            quotes[_repair_norm(unit['text'])].append(unit['translation'])
+    preamble = library_qa._paragraphs(zh_body)[:2]
+    output = list(preamble)
+    regenerated = 0
+    for unit in library_qa._expected_units(en_body):
+        kind, source = (unit['kind'], unit['text'])
+        if kind not in ('quote', 'heading'):
+            output.append(source)
+            continue
+        if kind == 'heading':
+            old = next(headings, {}).get('text', '')
+        else:
+            available = quotes[_repair_norm(source)]
+            old = available.pop(0) if available else ''
+        errors = []
+        library_qa._translation_checks(old, source, errors, [], 'candidate', 1)
+        source_images = Counter(map(library_qa._image_key, library_qa._images(source)))
+        old_images = Counter(map(library_qa._image_key, library_qa._images(old)))
+        if errors or source_images != old_images:
+            backend = backend_factory()
+            glossary = glossary_for(source, glossary_rows)
+            old = translate_cached([source], glossary, backend, translate_chunk, CACHE / 'zh_chunks')[0]
+            old = fix_latex_spacing.fix_text(old)[0]
+            regenerated += 1
+        if kind == 'heading':
+            output.append(old if old.startswith('#') else '# ' + old)
+        else:
+            output.append('> [!quote]- en\n' + '\n'.join(('> ' + line for line in source.splitlines())))
+            output.append(old)
+    return ('\n\n'.join(output) + '\n', regenerated)
+
+def repair_zh(folder: Path, ck: str, full_name: str, codes, worker: str, backend_factory=None, glossary_rows=()) -> tuple[bool, str]:
+    src, zh_path = (folder / full_name, folder / f'{ck}_ZH.md')
+    zh_text = zh_path.read_text(encoding='utf-8', errors='ignore')
+    en_digest, zh_digest = (sha256(src), sha256(zh_path))
+    _, _, en_body = front_matter(src.read_text(encoding='utf-8', errors='ignore'))
+    _, zh_fm_raw, zh_body = front_matter(zh_text)
+    if not zh_fm_raw.strip():
+        return (False, 'ZH has no front matter; refusing to rewrite it')
+    if not zh_body.strip():
+        return (False, 'ZH body is empty')
+    new_body, repairs, reasons = _repair_zh_alignment(en_body, zh_body)
+    if any((reason.startswith('quote not uniquely aligned') for reason in reasons)):
+        return (False, 'unknown English quote difference; existing bytes retained')
+    if not repairs and backend_factory is None:
+        return (False, 'no understood repair for: ' + '; '.join(dict.fromkeys(reasons))[:300])
+    candidate = zh_text[:len(zh_text) - len(zh_body)] + new_body
+    preview_base = CACHE / 'zh_repair_preview'
+    preview_base.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=preview_base) as temporary:
+        preview = Path(temporary) / ck
+        shutil.copytree(folder, preview, ignore=shutil.ignore_patterns('.sync_*.lock'))
+        (preview / zh_path.name).write_text(candidate, encoding='utf-8')
+        result = library_qa.validate_paper(preview, ck, f'{ck}.pdf', require_qc=True, require_translation=True)
+        remaining = sorted({e['code'] for e in result['errors']})
+        if remaining and set(remaining) <= REPAIRABLE_QA_CODES and (backend_factory is not None):
+            title = library_qa._front_matter(zh_text)[0].get('title', '')
+            new_body, regenerated = _repair_translation_units(en_body, new_body, title, backend_factory, glossary_rows)
+            candidate = zh_text[:len(zh_text) - len(zh_body)] + new_body
+            (preview / zh_path.name).write_text(candidate, encoding='utf-8')
+            result = library_qa.validate_paper(preview, ck, f'{ck}.pdf', require_qc=True, require_translation=True)
+            remaining = sorted({e['code'] for e in result['errors']})
+            repairs.append(f'retranslated {regenerated} invalid units')
+    if remaining:
+        return (False, f"repaired text still fails translation QA ({','.join(remaining)}); existing bytes kept")
+    if sha256(src) != en_digest or sha256(zh_path) != zh_digest or (not lock_owned(folder, 'zh', worker)):
+        return (False, 'EN/ZH changed during repair or lock lost; nothing published, retried next run')
+    base = CACHE / 'zh_repair_backups' / ck / f'{dt.datetime.now():%Y%m%d_%H%M%S}_{zh_digest[:16]}'
+    n = 0
+    while (base / zh_path.name).exists():
+        n += 1
+        base = base.with_name(base.name + f'.{n}')
+    try:
+        base.mkdir(parents=True, exist_ok=False)
+        shutil.copy2(zh_path, base / zh_path.name)
+        (base / 'meta.json').write_text(json.dumps({'citekey': ck, 'worker': worker, 'time': dt.datetime.now().isoformat(timespec='seconds'), 'preimage_sha256': zh_digest, 'source_sha256': en_digest, 'repaired_sha256': hashlib.sha256(candidate.encode('utf-8')).hexdigest(), 'repairs': repairs, 'qa_codes_before': sorted(codes)}, ensure_ascii=False, indent=1), encoding='utf-8')
+    except OSError as e:
+        return (False, f"backup under {CACHE / 'zh_repair_backups'} failed ({e}); nothing published")
+    if sha256(src) != en_digest or sha256(zh_path) != zh_digest or (not lock_owned(folder, 'zh', worker)):
+        return (False, 'EN/ZH changed while backing up; nothing published')
+    tmp = zh_path.with_name(f'.{zh_path.name}.{os.getpid()}.tmp')
+    try:
+        with tmp.open('w', encoding='utf-8', newline='\n') as stream:
+            stream.write(candidate)
+            stream.flush()
+            os.fsync(stream.fileno())
+        if sha256(src) != en_digest or sha256(zh_path) != zh_digest:
+            return (False, 'EN/ZH changed before publication; existing bytes kept')
+        os.replace(tmp, zh_path)
+    finally:
+        tmp.unlink(missing_ok=True)
+    return (True, '; '.join(repairs))
 
 def pause_boundary(apply, log):
     request = os.environ.get('LIBRARY_SYNC_PAUSE_FILE')
@@ -504,7 +837,7 @@ def main() -> int:
         if not isinstance(snap.get('items'), list) or not isinstance(snap.get('collections'), list):
             raise ValueError('invalid explicit Zotero snapshot')
         reg, atts, cols = _index_zotero(snap['items'], snap['collections'])
-        L(f'- Explicit verified snapshot: {a.snapshot.name} ({snap.get('time')})')
+        L(f"- Explicit verified snapshot: {a.snapshot.name} ({snap.get('time')})")
     else:
         reg, atts, cols = load_zotero(L, a.snapshot_max_age)
     wanted, root_rank = (None, {})
@@ -542,13 +875,14 @@ def main() -> int:
     targets.sort(key=lambda t: (t[0], t[2].get('citationKey', '')))
     rank_of = {k: r for r, k, _ in targets}
     targets = [(k, d) for _, k, d in targets]
-    L(f'# sync {stamp}  mode={('APPLY' if a.apply else 'DRY-RUN')}  targets={len(targets)}  steps={sorted(steps)}  worker={a.worker_id}  model={('API profiles (see per-role backends)' if a.api_config else a.model or 'default')}' + (f'  only-list={Path(a.only_list).name} ({len(only_list)})' if only_list is not None else ''))
+    L(f"# sync {stamp}  mode={('APPLY' if a.apply else 'DRY-RUN')}  targets={len(targets)}  steps={sorted(steps)}  worker={a.worker_id}  model={('API profiles (see per-role backends)' if a.api_config else a.model or 'default')}" + (f'  only-list={Path(a.only_list).name} ({len(only_list)})' if only_list is not None else ''))
     folders = scan_library()
     glossary_rows = load_glossary() if 'zh' in steps else []
     skip_zh = {l.strip() for l in NO_TRANSLATE_LIST.read_text(encoding='utf-8').splitlines() if l.strip() and (not l.startswith('#'))} if NO_TRANSLATE_LIST.is_file() else set()
     fails = load_fails()
     stats = defaultdict(int)
     todo_md, todo_zh, todo_note, todo_qc, renames = ([], [], [], [], [])
+    todo_zh_repair: list[tuple] = []
     qc_after_md, zh_after_qc, md_done, qc_done = ({}, {}, [], [])
     skipped_fail = 0
     status_rows = []
@@ -606,6 +940,10 @@ def main() -> int:
             zh_after_qc[key] = (key, d, full_name)
         elif zh_wanted and (qc_ok or not a.require_qc):
             todo_zh.append((key, d, full_name))
+        if 'zh' in steps and (not lang_zh) and has['_ZH'] and has['_FULL'] and ('no-translate' not in tags) and (ck not in skip_zh):
+            repair_codes = zh_recheck(folder, ck, full_name)
+            if repair_codes:
+                todo_zh_repair.append((key, d, full_name, repair_codes))
         if 'note' in steps and (not has['_Note']):
             todo_note.append((key, d))
         status_rows.append({'citekey': ck, 'zotero_key': key, 'pdf': bool(pdf), 'full': has['_FULL'], 'zh': has['_ZH'], 'note': has['_Note'], 'lang': 'zh' if lang_zh else 'en', 'collections': '; '.join((col_path(cols, c) for c in d.get('collections', []))), 'tags': '; '.join(sorted(tags))})
@@ -620,11 +958,13 @@ def main() -> int:
         return f.stat().st_size if f.is_file() else 0
     todo_zh.sort(key=lambda t: (_en_size(t) > 400000, rank_of.get(t[0], 99), t[1]['citationKey']))
     L(f'- 文件夹改名：{len(renames)}' + (f'（例：{renames[0][0].name} → {renames[0][1].name}）' if renames else ''))
-    L(f'- 待生成全文 md（MinerU）：{len(todo_md)}；待质检 QC：{len(todo_qc)}（其中全文生成后再质检：{len(qc_after_md)}）；待翻译 ZH：{len(todo_zh)}（质检通过后再翻译：{len(zh_after_qc)}）；待建 Note：{len(todo_note)}；因多次失败跳过：{skipped_fail}；本地不翻译名单：{len(skip_zh)}')
+    L(f'- 待生成全文 md（MinerU）：{len(todo_md)}；待质检 QC：{len(todo_qc)}（其中全文生成后再质检：{len(qc_after_md)}）；待翻译 ZH：{len(todo_zh)}（质检通过后再翻译：{len(zh_after_qc)}）；待本地修复 ZH：{len(todo_zh_repair)}；待建 Note：{len(todo_note)}；因多次失败跳过：{skipped_fail}；本地不翻译名单：{len(skip_zh)}')
     for key, d, pdf, full_name in todo_md[:15]:
         L(f'  md: {full_name}  <- {pdf.name}')
     for key, d, full_name in todo_zh[:15]:
-        L(f'  zh: {d['citationKey']}_ZH.md')
+        L(f"  zh: {d['citationKey']}_ZH.md")
+    for key, d, full_name, codes in todo_zh_repair[:15]:
+        L(f"  zh repair: {d['citationKey']}_ZH.md  ({','.join(codes)})")
     for key, d, full_name in todo_qc[:15]:
         L(f'  qc: {full_name}' + ('  (priority)' if d.get('citationKey') in priority else ''))
     generated, locked, consec, aborted = (0, 0, 0, '')
@@ -675,7 +1015,7 @@ def main() -> int:
                 try:
                     if pre:
                         md = Path(pre['md'])
-                        src_tag = f'mineru (pre-parsed {pre['method']} {pre['score']}: {md})'
+                        src_tag = f"mineru (pre-parsed {pre['method']} {pre['score']}: {md})"
                     else:
                         md = parse_pdf(pdf, MINERU_OUT / parse_name, a.mineru_lang if not (d.get('language') or '').startswith('zh') else 'ch')
                 except Exception as e:
@@ -783,7 +1123,7 @@ def main() -> int:
                 if new_body != body and (not (qc_backup / src.name).exists()):
                     qc_backup.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(src, qc_backup / src.name)
-                ffm['qc'] = f'{'+'.join(sorted(qc_be.used_paper)) or qc_be.model} {dt.date.today().isoformat()}'
+                ffm['qc'] = f"{'+'.join(sorted(qc_be.used_paper)) or qc_be.model} {dt.date.today().isoformat()}"
                 src.write_text(yaml_block(ffm) + '\n' + new_body, encoding='utf-8')
                 stats['qc'] += 1
                 qc_done.append(key)
@@ -845,7 +1185,6 @@ def main() -> int:
                         break
                     continue
                 fm = yaml_block({'citekey': ck, 'zotero_key': key, 'doi': d.get('DOI') or '', 'title': d.get('title') or '', 'source': 'translated by ' + '+'.join(sorted(be.used_paper)), 'generated': dt.date.today().isoformat()})
-                zh = fix_latex_spacing.fix_text(zh)[0]
                 if src.read_text(encoding='utf-8', errors='ignore') != src_text:
                     L(f'!! zh {ck}: {full_name} changed while it was being translated; {ck}_ZH.md written from the earlier text, check its quote blocks')
                     stats['zh_source_changed'] += 1
@@ -853,11 +1192,44 @@ def main() -> int:
                 stats['zh'] += 1
                 generated += 1
                 consec = 0
-                L(f'  zh done: {ck}_ZH.md  ({'+'.join(sorted(be.used_paper))}, {int(time.time() - t0)}s)')
+                L(f"  zh done: {ck}_ZH.md  ({'+'.join(sorted(be.used_paper))}, {int(time.time() - t0)}s)")
                 if not a.api_config and a.model and a.model.startswith('codex/') and (not be.is_codex):
                     L('- codex worker fell back to GLM; ending this run so the runner can retry Codex when its quota returns')
                     aborted = 'codex_fallback'
                     break
+            finally:
+                release(folder, 'zh', a.worker_id)
+
+        def repair_backend():
+            nonlocal qc_be, be
+            if be is None:
+                qc_be, be = select_backends(a, L)
+            return be
+        for key, d, full_name, _planned_codes in todo_zh_repair:
+            if pause_boundary(a.apply, L):
+                return 75
+            if aborted:
+                break
+            ck = d['citationKey']
+            folder = LIB / 'papers' / ck
+            src, zh_path = (folder / full_name, folder / f'{ck}_ZH.md')
+            if not src.is_file() or not zh_path.is_file():
+                continue
+            if not acquire(folder, 'zh', a.worker_id):
+                locked += 1
+                continue
+            try:
+                codes = _planned_codes
+                ok, note = repair_zh(folder, ck, full_name, codes, a.worker_id, backend_factory=repair_backend, glossary_rows=glossary_rows)
+                if ok:
+                    stats['zh_repaired'] = stats.get('zh_repaired', 0) + 1
+                    L(f'  zh repaired: {ck}_ZH.md  ({note})')
+                else:
+                    stats['zh_repair_kept'] = stats.get('zh_repair_kept', 0) + 1
+                    L(f'!! zh repair retained existing bytes for {ck}_ZH.md: {note}')
+            except Exception as e:
+                stats['zh_repair_kept'] = stats.get('zh_repair_kept', 0) + 1
+                L(f'!! zh repair error for {ck}_ZH.md: {e}; existing bytes kept')
             finally:
                 release(folder, 'zh', a.worker_id)
     if 'indexes' in steps and a.apply:
@@ -879,7 +1251,7 @@ def main() -> int:
             full = f'{ck}_MD.md' if r['lang'] == 'zh' else f'{ck}_EN.md'
             if (folder / full).is_file():
                 links.append(f'[[papers/{ck}/{full[:-3]}|全文]]')
-            return f'- [[papers/{ck}/{ck}_Note|{ck}]] {(d.get('title') or '')[:90]} ({year_of(d)})' + (' · ' + ' · '.join(links) if links else '')
+            return f"- [[papers/{ck}/{ck}_Note|{ck}]] {(d.get('title') or '')[:90]} ({year_of(d)})" + (' · ' + ' · '.join(links) if links else '')
         (idx / 'all.md').write_text('# 全部文献\n\n' + '\n'.join((line(r) for r in status_rows)) + '\n', encoding='utf-8')
         by_col, by_year, by_journal, by_tag = (defaultdict(list), defaultdict(list), defaultdict(list), defaultdict(list))
         for r in status_rows:
@@ -907,7 +1279,7 @@ def main() -> int:
             if history:
                 metrics = {'role': role, 'requests': len(history), 'models': sorted({x['model'] for x in history}), 'total_tokens': sum((x['usage']['total_tokens'] for x in history)) if all(('total_tokens' in x.get('usage', {}) for x in history)) else None, 'elapsed_request_seconds': round(sum((x['elapsed_seconds'] for x in history)), 3)}
                 L('API_USAGE ' + json.dumps(metrics, ensure_ascii=False))
-    L(f'SUMMARY {json.dumps(dict(stats), ensure_ascii=False)} pending_md={len(todo_md)} pending_qc={len(todo_qc)} pending_zh={len(todo_zh)} skipped_fail={skipped_fail} locked={locked} aborted={aborted or 'none'} used={'+'.join(sorted(used_models)) or '-'}')
+    L(f"SUMMARY {json.dumps(dict(stats), ensure_ascii=False)} pending_md={len(todo_md)} pending_qc={len(todo_qc)} pending_zh={len(todo_zh)} pending_zh_repair={len(todo_zh_repair)} skipped_fail={skipped_fail} locked={locked} aborted={aborted or 'none'} used={'+'.join(sorted(used_models)) or '-'}")
     (REPORTS / f'sync_{stamp}.md').write_text('\n'.join(log) + '\n', encoding='utf-8')
     return 0
 if __name__ == '__main__':

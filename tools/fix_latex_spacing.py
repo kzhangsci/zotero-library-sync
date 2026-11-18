@@ -218,16 +218,16 @@ def main() -> int:
                 shutil.copy2(f, TRASH / f.name)
             f.write_text(new, encoding='utf-8')
     names = {'R1': '闭合$与标点间多空格', 'R2': '括号与开头$间多空格', 'R3': '纯上下标公式前多空格', 'R4': '闭合$与连字符间多空格', 'R5': '公式内部空格（渲染不可见）', 'R6': '◦ → °'}
-    rep = [f'# 公式空格确定性修复 {('APPLY' if a.apply else 'DRY-RUN')} {dt.datetime.now():%Y-%m-%d %H:%M}', '', f'扫描 {len(files)} 份（{', '.join(pats)}），改动 {changed} 份：' + '、'.join((f'{k} {v}' for k, v in files_changed.items() if v)), f'跳过：有锁（worker 正在处理）{locked} 份；因不变量不满足而整段保持原样的段落 {reverted_total} 个', '', '| 规则 | 说明 | EN | MD | ZH |', '|---|---|---|---|---|']
+    rep = [f"# 公式空格确定性修复 {('APPLY' if a.apply else 'DRY-RUN')} {dt.datetime.now():%Y-%m-%d %H:%M}", '', f"扫描 {len(files)} 份（{', '.join(pats)}），改动 {changed} 份：" + '、'.join((f'{k} {v}' for k, v in files_changed.items() if v)), f'跳过：有锁（worker 正在处理）{locked} 份；因不变量不满足而整段保持原样的段落 {reverted_total} 个', '', '| 规则 | 说明 | EN | MD | ZH |', '|---|---|---|---|---|']
     for r in ('R1', 'R2', 'R3', 'R4', 'R5', 'R6'):
-        rep.append(f'| {r} | {names[r]} | {by_kind['EN'][r]} | {by_kind['MD'][r]} | {by_kind['ZH'][r]} |')
+        rep.append(f"| {r} | {names[r]} | {by_kind['EN'][r]} | {by_kind['MD'][r]} | {by_kind['ZH'][r]} |")
     rep += ['', '## 样例（每条规则最多 8 条）', '']
     for r in ('R1', 'R2', 'R3', 'R4', 'R5', 'R6'):
         rep.append(f'### {r} {names[r]}')
         rep += [f'- {ck}: {d}' for ck, d in rule_samples.get(r, [])] or ['- （无）']
         rep.append('')
     rep += ['## 改动文件', ''] + [f'- {n}（{k} 处规则命中）' for n, k in changed_list]
-    out = REPORTS / f'latex_spacing_{dt.date.today():%Y%m%d}{('' if a.apply else '_dryrun')}.md'
+    out = REPORTS / f"latex_spacing_{dt.date.today():%Y%m%d}{('' if a.apply else '_dryrun')}.md"
     out.write_text('\n'.join(rep) + '\n', encoding='utf-8')
     print(f'scanned {len(files)}, changed {changed} ({files_changed}), locked {locked}, reverted paragraphs {reverted_total} -> {out.name}')
     for k in ('EN', 'MD', 'ZH'):

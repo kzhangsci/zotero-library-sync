@@ -4,13 +4,21 @@ var LibrarySyncBridge = (() => {
   const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   const ITEM_KEY = /^[A-Z0-9]{8}$/;
   const RUN_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
-  const PROVIDERS = ["glm", "deepseek", "tongji"];
+  const PROVIDERS = ["glm", "deepseek", "tongji", "zcode"];
+  // Providers that accept a stored API key. zcode is the local-login provider:
+  // it stores no key here and (since beta.14) the new backend honestly has no
+  // callable CLI route for it; old beta.13 backends keep their legacy behavior.
+  const KEY_PROVIDERS = ["glm", "deepseek", "tongji"];
+  const ZCODE_MODELS = ["glm-5.3", "glm-5.3-flash"];
+  const ZCODE_PLANS = ["coding", "start"];
+  const ZCODE_EFFORTS = ["default", "low", "high", "max"];
   const MODEL_ID = /^[A-Za-z0-9][A-Za-z0-9_.:/@+-]{0,255}$/;
   const EFFORT = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/;
   const EXTENDED = ["base_url", "models_url", "protocol", "thinking", "extra_body", "endpoint_confirmed"];
-  // Single version source for the diagnostics header; the packaged ?v= strings
-  // and manifest version are validated separately by the Python build tests.
-  const VERSION = "0.2.0-beta.9";
+  // Single version source for the diagnostics header; the packaged ?v= strings,
+  // manifest version and dialog URL are all validated against it by the Python
+  // build, which refuses to produce a package on any drift.
+  const VERSION = "0.2.0-beta.15";
   class SafeError extends Error {
     constructor(code, message, details = {}) {
       super(message); this.name = "SafeError"; this.code = code;
@@ -62,17 +70,33 @@ var LibrarySyncBridge = (() => {
     return { provider: value.provider, model: value.model.trim(), reasoning_effort: value.reasoning_effort };
   }
   function profileDefaults(provider) {
-    if (!PROVIDERS.includes(provider)) fail("INPUT", "Provider / Key 来源须为 glm、deepseek 或 tongji；API 地址可另行自填。");
-    if (provider === "tongji") return { provider, model: "", reasoning_effort: "default", timeout: 1500, max_tokens: 32768,
+    // User preference (2026-11-17): every supported provider defaults to
+    // thinking ON and effort "high", from each provider's documented supported
+    // set — distinct from its official default (GLM 5.3 default max) and its
+    // maximum. Tongji has no thinking parameter; its effort default is the
+    // documented "high". Existing saved selections are never migrated.
+    if (!PROVIDERS.includes(provider)) fail("INPUT", "Provider / Key 来源须为 glm、deepseek、tongji 或 zcode；API 地址可另行自填。");
+    if (provider === "zcode") return { provider, plan: "coding", model: "", reasoning_effort: "high", timeout: 1500, max_tokens: 128000 };
+    if (provider === "tongji") return { provider, model: "", reasoning_effort: "high", timeout: 1500, max_tokens: 32768,
       base_url: "https://agi.tongji.edu.cn/v1", models_url: "https://agi.tongji.edu.cn/v1/models",
       protocol: "openai_chat_completions", thinking: "default", extra_body: {}, endpoint_confirmed: false };
-    return { provider, model: "", reasoning_effort: "max", timeout: 1500, max_tokens: provider === "glm" ? 131072 : 393216,
-      base_url: provider === "glm" ? "https://open.bigmodel.cn/api/paas/v4" : "https://api.deepseek.com",
+    return { provider, model: "", reasoning_effort: "high", timeout: 1500, max_tokens: provider === "glm" ? 131072 : 393216,
+      base_url: provider === "glm" ? "https://open.bigmodel.cn/api/coding/paas/v4" : "https://api.deepseek.com",
       models_url: provider === "glm" ? "" : "https://api.deepseek.com/models",
       protocol: "openai_chat_completions", thinking: "enabled", extra_body: {}, endpoint_confirmed: false };
   }
+  // Saved profiles hydrate missing extended fields with the values that were
+  // the plugin defaults when those profiles were written; only fresh drafts
+  // advertise the newer templates. This keeps the historical meaning of a glm
+  // profile without a base URL (the general API endpoint) stable.
+  function hydrationDefaults(provider) {
+    if (provider === "glm") return { provider, model: "", reasoning_effort: "max", timeout: 1500, max_tokens: 131072,
+      base_url: "https://open.bigmodel.cn/api/paas/v4", models_url: "", protocol: "openai_chat_completions",
+      thinking: "enabled", extra_body: {}, endpoint_confirmed: false };
+    return profileDefaults(provider);
+  }
   // Defensive input limits, not a statement of any model's output capability.
-  function tokenInputLimit(provider) { return provider === "glm" ? 131072 : provider === "tongji" ? 1048576 : 393216; }
+  function tokenInputLimit(provider) { return provider === "glm" ? 131072 : provider === "tongji" ? 1048576 : provider === "zcode" ? 128000 : 393216; }
   // Built-in habit templates. Their names recall how ZCode / DeepSeek Harness
   // (dsh) are commonly used, but this adapter never reads those clients'
   // files, live settings or credentials, and never claims to import them.
@@ -89,10 +113,11 @@ var LibrarySyncBridge = (() => {
   function habitPreset(id) {
     const preset = habitPresets().find(p => p.id === id);
     if (!preset) fail("INPUT", "请选择已列出的习惯预设。");
-    return { ...profileDefaults(preset.provider), model: preset.model,
+    return { ...hydrationDefaults(preset.provider), model: preset.model,
       reasoning_effort: preset.effort, thinking: "enabled" };
   }
   function endpointKind(value) {
+    if (value?.provider === "zcode") return "zcode";
     if (value?.protocol !== "openai_chat_completions" || !PROVIDERS.includes(value?.provider)) return "custom";
     // Match the backend catalog scope: even an official base with a nondefault
     // listing URL is custom, and cannot inherit official model capabilities.
@@ -113,7 +138,7 @@ var LibrarySyncBridge = (() => {
   }
   function catalogEndpointKind(value) {
     const kind = endpointKind(value);
-    return ["custom", "tongji"].includes(kind) ? kind : kind === "glm_coding_plan" ? "coding_plan" : "standard";
+    return ["custom", "tongji", "zcode"].includes(kind) ? kind : kind === "glm_coding_plan" ? "coding_plan" : "standard";
   }
   function endpointSignature(value) {
     return JSON.stringify([String(value?.base_url || "").trim().replace(/\/+$/, ""),
@@ -121,6 +146,51 @@ var LibrarySyncBridge = (() => {
   }
   function publicModelDocs(value) {
     return ["glm_standard", "glm_coding_plan"].includes(endpointKind(value)) && !String(value.models_url || "").trim();
+  }
+  // Bundled official documentation candidates mirror model_catalog.py exactly.
+  // They are an immediate offline seed for recognized default endpoints only:
+  // never an account entitlement list, and never offered for custom URLs.
+  const GLM_STANDARD_CANDIDATES = [
+    "glm-5.3", "glm-5.3-flash", "glm-5.3-flashx", "glm-5.3-flashx-legal",
+    "glm-5.2", "glm-5.1", "glm-5-turbo", "glm-5", "glm-4.7", "glm-4.7-flash",
+    "glm-4.7-flashx", "glm-4.6", "glm-4.5-air", "glm-4.5-airx", "glm-4.5-flash",
+    "glm-4-flash-250414", "glm-4-flashx-250414"];
+  const GLM_53_DETAIL = { context_window: 1048576, max_output_tokens: 131072,
+    effort_levels: ["low", "high", "max"], default_effort: "max", highest_effort: "max" };
+  function bundledCatalog(value) {
+    const kind = endpointKind(value), provider = value?.provider;
+    const seed = (models, details, endpointKindLabel, notice) => ({ provider, models, source: "bundled_catalog",
+      fetched_at: null, endpoint_kind: endpointKindLabel, notice, details });
+    if (provider === "glm" && kind === "glm_coding_plan") {
+      return seed(["glm-5.3", "glm-5.3-flash"],
+        Object.fromEntries(["glm-5.3", "glm-5.3-flash"].map(id => [id, { ...GLM_53_DETAIL }])), "coding_plan",
+        "内置官方文档候选（离线快照，不是账号可用清单）；联网获取后替换，失败时保留。");
+    }
+    if (provider === "glm" && kind === "glm_standard") {
+      const details = {};
+      for (const id of GLM_STANDARD_CANDIDATES) {
+        if (id.startsWith("glm-5.3")) details[id] = { ...GLM_53_DETAIL };
+        else if (id === "glm-5.2") details[id] = { max_output_tokens: 131072,
+          effort_levels: ["max", "xhigh", "high", "medium", "low", "minimal", "none"],
+          default_effort: "max", highest_effort: "max" };
+      }
+      return seed(GLM_STANDARD_CANDIDATES, details, "standard",
+        "内置官方文档候选（离线快照，不是账号可用清单）；联网获取后替换，失败时保留。");
+    }
+    if (provider === "deepseek" && kind === "deepseek") {
+      const detail = { context_window: 1048576, max_output_tokens: 393216,
+        effort_levels: ["low", "high", "max"], default_effort: "high", highest_effort: "max" };
+      return seed(["deepseek-flash", "deepseek-v4-pro"],
+        { "deepseek-flash": { ...detail }, "deepseek-v4-pro": { ...detail } }, "standard",
+        "内置官方文档候选（离线快照，不是账号可用清单）；联网获取后替换，失败时保留。");
+    }
+    if (provider === "tongji" && kind === "tongji") {
+      return seed(["DeepSeek-V4.1-Flash", "MiMo-V2.6-Flash"],
+        { "DeepSeek-V4.1-Flash": { effort_levels: ["none", "low", "high", "xhigh", "max"], default_effort: "high" },
+          "MiMo-V2.6-Flash": { effort_levels: ["none", "high"], default_effort: "high" } }, "tongji",
+        "内置同济模型文档候选（离线快照，不是账号可用清单）；实际名单与权限以校内 API 列表为准。");
+    }
+    return null; // Custom URLs and the zcode login never get official seeds.
   }
   function modelDetails(value, choices) {
     const name = String(value?.model || "").trim(), kind = endpointKind(value);
@@ -151,8 +221,63 @@ var LibrarySyncBridge = (() => {
     return { max_tokens: maxTokens, reasoning_effort: highest,
       ...(knownGLM || knownDS ? { thinking: "enabled" } : {}) };
   }
+  const EFFORT_ORDER = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
+  function recommendedEffort(levels) {
+    // User-preferred default is "high", strictly from the documented set. When
+    // absent, fall back to the closest documented thinking-capable level
+    // (never none/minimal, never invented); no thinking-capable level → none.
+    if (!Array.isArray(levels) || !levels.length || levels.some(l => !EFFORT_ORDER.includes(l))) return null;
+    if (levels.includes("high")) return "high";
+    const capable = levels.filter(l => l !== "none" && l !== "minimal");
+    return capable.length ? capable.reduce((a, b) => EFFORT_ORDER.indexOf(b) > EFFORT_ORDER.indexOf(a) ? b : a) : null;
+  }
+  // Each known Tongji campus model's documented effort levels (campus docs).
+  const TONGJI_EFFORT_LEVELS = { "DeepSeek-V4.1-Flash": ["none", "low", "high", "xhigh", "max"],
+    "MiMo-V2.6-Flash": ["none", "high"] };
+  function modelRecommended(value, choices) {
+    // The user-preferred DEFAULT patch (thinking ON + effort high), distinct
+    // from the provider's official default and from modelMaximum. Selecting a
+    // model fills these; the maximum stays an explicit separate action and
+    // every other option in the pickers remains available.
+    if (!PROVIDERS.includes(value?.provider)) return null;
+    const name = String(value?.model || "").trim(), kind = endpointKind(value);
+    if (value.provider === "zcode") {
+      // The provider has no callable route: recommending parameters for it
+      // would imply it can run. Draft fields stay editable by hand.
+      return null;
+    }
+    const knownGLM = kind === "glm_standard" && ["glm-5.2", "glm-5.3", "glm-5.3-flash", "glm-5.3-flashx", "glm-5.3-flashx-legal"].includes(name);
+    const knownDS = kind === "deepseek" && ["deepseek-flash", "deepseek-v4-pro"].includes(name);
+    const knownTongji = kind === "tongji" && Object.hasOwn(TONGJI_EFFORT_LEVELS, name);
+    const detail = modelDetails(value, choices);
+    // "high" is documented for every known model above; unverified models get
+    // no recommendation at all rather than an invented one.
+    const knownHigh = knownGLM || knownDS || knownTongji;
+    const effort = detail ? recommendedEffort(detail.effort_levels) : (knownHigh ? "high" : null);
+    if (!effort) return null;
+    const maxTokens = detail?.max_output_tokens ?? (knownGLM ? 131072 : knownDS ? 393216 : null);
+    const fallback = effort !== "high";
+    // Tongji sends no thinking parameter; its thinking-on preference is the effort itself.
+    if (value.provider === "tongji") {
+      return { reasoning_effort: effort, ...(Number.isSafeInteger(maxTokens) ? { max_tokens: maxTokens } : {}), fallback };
+    }
+    return { reasoning_effort: effort, thinking: "enabled",
+      ...(Number.isSafeInteger(maxTokens) && maxTokens >= 1 && maxTokens <= tokenInputLimit(value.provider) ? { max_tokens: maxTokens } : {}),
+      fallback };
+  }
   function modelParameterHelp(value, choices) {
     const p = value?.provider, name = String(value?.model || "").trim(), kind = endpointKind(value);
+    if (p === "zcode") {
+      const plan = value.plan === "start" ? "start" : "coding";
+      return { thinking: "ZCode 登录不发送 thinking；新版后台已停用该直连，思考参数仅在旧版后台（beta.13）按其原行为生效。",
+        effort: "新版后台已停用 ZCode 本机登录直连，推理档位不再下发给任何 CLI 进程；草稿档位仍可编辑并随配置保存，便于日后迁移或新版后台恢复支持。default 表示不指定，不是最低档。",
+        tokens: "输出上限由 ZCode 管理（本机 CLI 的 GLM-5.3 系列为 128000）；此处数值仅作记录，插件不能控制实际输出长度。",
+        effortLevels: ["default", "low", "high", "max"], defaultEffort: "",
+        endpointHelp: plan === "start"
+          ? "ZCode 登录 · Start Plan：本插件没有可调用的 Start Plan 路由（未实现官方 Start 调用，也不自建私有 OAuth 适配，不会改走 Coding Plan）；新版后台会明确禁用测试、列表与保存。请改选 API Key 服务商。"
+          : "ZCode 登录 · Coding Plan：beta.14 起新版后台不再经本机 CLI 直连执行（不复制本机 ZCode 凭据、不启动无头进程），测试与保存会被明确禁用并说明原因；旧版后台（beta.13 及更早）的该调用会复制本机完整凭据，插件同样不再发送。请优先改用 API Key 服务商（例如 GLM Coding Plan 端点 + API Key）。",
+        maximum: null, recommended: null };
+    }
     const glm53 = kind === "glm_standard" && ["glm-5.3", "glm-5.3-flash", "glm-5.3-flashx", "glm-5.3-flashx-legal"].includes(name);
     const glm52 = kind === "glm_standard" && name === "glm-5.2";
     const deepseek = kind === "deepseek" && ["deepseek-flash", "deepseek-v4-pro"].includes(name);
@@ -162,27 +287,27 @@ var LibrarySyncBridge = (() => {
     let effortLevels = [], defaultEffort = "";
     if (p === "tongji") {
       thinking = "同济平台使用 reasoning_effort 控制思考，不发送 thinking；此项固定为 default。none 表示关闭思考，default 表示省略参数、采用服务端默认。";
-      effort = "请使用校内模型详情或接口返回的 reasoning_effort 档位；平台可能自动调整不支持的档位，不能套用同名厂商模型参数。";
+      effort = "插件新模板默认 high（用户偏好：思考开启 + 高档投入；同济不发送 thinking，由本档位表达）。请按校内模型详情或接口返回的档位核对，平台可能自动调整不支持的档位，不能套用同名厂商模型参数。";
       tokens = "32768 是插件的可编辑请求初值，不是同济平台或此模型的最大输出；模型输出上限与上下文窗口须按校内模型详情核实。";
       if (kind === "tongji" && ["DeepSeek-V4.1-Flash", "MiMo-V2.6-Flash"].includes(name)) {
         effortLevels = name === "DeepSeek-V4.1-Flash" ? ["none", "low", "high", "xhigh", "max"] : ["none", "high"];
         defaultEffort = "high";
-        effort = `用户提供的同济模型文档列出 ${effortLevels.join(" / ")}，默认 high；none 关闭思考，default 省略参数。平台可能调整不支持的档位，实际行为以校内服务为准。`;
+        effort = `用户提供的同济模型文档列出 ${effortLevels.join(" / ")}，默认 high；none 关闭思考，default 省略参数。插件推荐默认 high（用户偏好），平台可能调整不支持的档位，实际行为以校内服务为准。`;
       }
     } else if (glm53 || glm52) {
       defaultEffort = "max";
       effortLevels = glm53 ? ["low", "high", "max"] : ["max", "xhigh", "high", "medium", "low", "minimal", "none"];
       thinking = glm53
-        ? "官方 GLM-5.3 系列默认 enabled，必须开启思考；disabled 不受支持。default 与 enabled 当前均开启，但前者依赖服务端默认。"
+        ? "官方 GLM-5.3 系列 thinking.type 仅支持 enabled（思考必须开启），官方默认 enabled；disabled 不受支持。default 与 enabled 当前均开启，但前者依赖服务端默认。"
         : "官方 GLM-5.2 默认 enabled，由模型判断是否需要思考；enabled 不是强制每次深思。default 依赖服务端默认。";
-      effort = glm53 ? "官方 GLM-5.3 系列支持 low / high / max，默认 max；其它档位不能照搬 Coding Plan 的映射。"
-        : "官方 GLM-5.2 默认 max；none / minimal 放弃思考，low / medium 映射 high，xhigh 映射 max。";
+      effort = glm53 ? "官方 GLM-5.3 系列支持 low / high / max，官方默认 max、最高 max；插件新模板与推荐默认为 high（用户偏好，非服务端默认、也非最高档）。其它档位不能照搬 Coding Plan 的映射。"
+        : "官方 GLM-5.2 默认 max；none / minimal 放弃思考，low / medium 映射 high，xhigh 映射 max。插件推荐默认 high（用户偏好）。";
       tokens = "官方通用 API 此模型输出上限 131072（128K），省略 max_tokens 时默认 65536（64K）；插件新模板显式填写最高值，已存配置不会自动覆盖。";
       if (name === "glm-5.3") tokens = "官方 GLM-5.3 上下文窗口为 1M；" + tokens;
     } else if (deepseek) {
       defaultEffort = "high"; effortLevels = ["low", "high", "max"];
-      thinking = "官方当前 DeepSeek 默认 enabled；default 与 enabled 当前均开启，但前者依赖服务端默认。reasoning_effort=none 也会关闭思考。";
-      effort = "官方当前 DeepSeek 默认 high；max 更深入。内置 DeepSeek 预设显式使用 max，因此 effort=default 与此预设不同。";
+      thinking = "官方当前 DeepSeek 默认 enabled（可显式 enabled / disabled）；default 与 enabled 当前均开启，但前者依赖服务端默认。reasoning_effort=none 也会关闭思考。";
+      effort = "官方当前 DeepSeek 默认 high、最高 max；插件新模板与推荐默认为 high（用户偏好，此处与官方默认一致）。max 更深入。内置 DeepSeek 预设显式使用 max，因此 effort=default 与此预设不同。";
       tokens = "官方当前模型上下文 1M，最大输出 393216（384K）；两者不同。省略 max_tokens 时：非思考 8K、思考 64K、max 思考 128K；插件会发送输入框数值。";
       if (value.thinking === "disabled" && !["default", "none"].includes(value.reasoning_effort)) {
         thinking += " 当前 disabled 与显式思考 effort 可能冲突，请按接口要求调整；插件不会静默替换。";
@@ -202,12 +327,15 @@ var LibrarySyncBridge = (() => {
       "获取列表不会覆盖当前参数；按最高值填写后仍需保存。";
     const endpointHelp = p === "tongji"
       ? "同济校内 API 使用独立 Key 和校内模型 ID，保留大小写；需具备相应网络和账户权限。模型列表可能包含 embedding 等非对话模型，请选择支持 Chat Completions 的模型用于 QC / ZH。连接失败不会自动换用其他服务。"
+      : p === "zcode"
+      ? "ZCode 登录：显式选择 Coding Plan 或 Start Plan 订阅服务商；Start Plan 以本机 CLI 实际支持为准，不支持时明确禁用。每次调用启动一个无头 ZCode 进程，速度明显慢于直连 API。"
       : p === "glm"
       ? kind === "glm_coding_plan"
         ? "当前为 GLM Coding Plan 端点：仅采用对应 overview 的 glm-5.3 / glm-5.3-flash 清单，不含 FlashX；同名展示不证明底层模型相同，能力须以此端点元数据为准。"
         : "GLM 通用 API 与 Coding Plan 的支持清单不同；Coding Plan 使用独立地址和对应 overview，同名展示不证明底层模型相同。"
       : "模型展示名 / 服务版本与 API ID 分开；请求始终使用 API ID。";
-    return { thinking, effort, tokens, effortLevels, defaultEffort, endpointHelp, maximum: modelMaximum(value, choices) };
+    return { thinking, effort, tokens, effortLevels, defaultEffort, endpointHelp,
+      maximum: modelMaximum(value, choices), recommended: modelRecommended(value, choices) };
   }
   function endpoint(value, base = false) {
     if (typeof value !== "string" || !value || value.length > 2048 || /[^\x21-\x7e]|[?#\\%]/.test(value)) fail("INPUT", "API 地址必须为无凭据、查询参数或片段的 HTTPS 地址。");
@@ -248,8 +376,21 @@ var LibrarySyncBridge = (() => {
       timeout: integer(value.timeout ?? 1500, 1, 1500, "timeout"),
       max_tokens: integer(value.max_tokens ?? 32768, 1, tokenInputLimit(value.provider), "max_tokens") };
     if (empty) result.model = "";
+    if (result.provider === "zcode") {
+      // The CLI adapter has no endpoint URL and one model set per subscription;
+      // anything else would be silently ignored at call time. The plan is an
+      // explicit routing choice; "coding" is the only default, and historical
+      // zcode profiles migrate to it (they always ran the bigmodel Coding Plan).
+      if (EXTENDED.some(k => Object.hasOwn(value, k))) fail("INPUT", "ZCode 登录不使用 API 地址、协议或附加参数；请改选其它服务商自填地址。");
+      const plan = value.plan === undefined ? "coding" : value.plan;
+      if (!ZCODE_PLANS.includes(plan)) fail("INPUT", "ZCode 订阅须为 coding（Coding Plan）或 start（Start Plan）。");
+      if (!ZCODE_EFFORTS.includes(result.reasoning_effort)) fail("INPUT", "ZCode 登录支持 default / low / high / max 推理档。");
+      if (result.model && !ZCODE_MODELS.includes(result.model)) fail("INPUT", "ZCode 登录当前支持 glm-5.3 与 glm-5.3-flash。");
+      return { ...result, plan };
+    }
+    if (value.plan !== undefined) fail("INPUT", "订阅（plan）仅适用于 zcode 登录；API Key 服务商没有此字段。");
     if (!EXTENDED.some(k => Object.hasOwn(value, k))) return result;
-    const d = profileDefaults(result.provider);
+    const d = hydrationDefaults(result.provider);
     if ((value.protocol ?? d.protocol) !== d.protocol) fail("INPUT", "当前支持 openai_chat_completions；Responses / Anthropic 需要独立适配，不能仅更改名称或 URL。");
     if (!["default", "enabled", "disabled"].includes(value.thinking ?? "default")) fail("INPUT", "Thinking 须为 default、enabled 或 disabled。");
     if (result.provider === "tongji" && (value.thinking ?? "default") !== "default") fail("INPUT", "同济平台请使用 reasoning_effort 控制思考，thinking 须为 default。");
@@ -290,6 +431,7 @@ var LibrarySyncBridge = (() => {
     if (!object(value) || typeof value.configured !== "boolean" || !object(value.credentials) ||
         !["glm", "deepseek"].every(p => typeof value.credentials[p] === "boolean") ||
         value.credentials.tongji !== undefined && typeof value.credentials.tongji !== "boolean" ||
+        value.credentials.zcode !== undefined && typeof value.credentials.zcode !== "boolean" ||
         !(value.config === null && !value.configured || object(value.config) && value.config.schema === 1)) {
       fail("PROTOCOL", "bridge 配置响应格式不符。");
     }
@@ -306,7 +448,11 @@ var LibrarySyncBridge = (() => {
       result[phase] = profile(row, true);
     }
     return { configured: value.configured, config: result,
-      credentials: { glm: value.credentials.glm, deepseek: value.credentials.deepseek, tongji: value.credentials.tongji === true } };
+      credentials: { glm: value.credentials.glm, deepseek: value.credentials.deepseek, tongji: value.credentials.tongji === true,
+        ...(value.credentials.zcode !== undefined ? { zcode: value.credentials.zcode === true } : {}) },
+      // Sanitized ZCode subscription support facts; the controller re-bounds
+      // every field before use. Absent on old bridges (capability-gated).
+      ...(value.zcodePlans !== undefined ? { zcodePlans: value.zcodePlans } : {}) };
   }
   function status(value) {
     if (!object(value) || typeof value.active !== "boolean" ||
@@ -339,11 +485,13 @@ var LibrarySyncBridge = (() => {
     return body;
   }
   function route(method, path) {
+    const diagnosisPath = path.startsWith("/v1/diagnosis/") ? path.slice("/v1/diagnosis/".length).split("/") : null;
     const allowed = method === "GET"
       ? ["/v1/status", "/v1/history", "/v1/config", "/v1/mineru"].includes(path) ||
         (path.startsWith("/v1/status/") && RUN_ID.test(path.slice(11))) ||
-        (path.startsWith("/v1/operations/") && UUID.test(path.slice(15)))
-      : method === "POST" && ["/v1/config", "/v1/keys", "/v1/mineru", "/v1/credentials/reveal", "/v1/test", "/v1/models", "/v1/preview", "/v1/preview/rebind", "/v1/start", "/v1/pause", "/v1/resume"].includes(path);
+        (path.startsWith("/v1/operations/") && UUID.test(path.slice(15))) ||
+        (diagnosisPath && diagnosisPath.length === 2 && RUN_ID.test(diagnosisPath[0]) && ITEM_KEY.test(diagnosisPath[1]))
+      : method === "POST" && ["/v1/config", "/v1/keys", "/v1/mineru", "/v1/credentials/reveal", "/v1/test", "/v1/models", "/v1/preview", "/v1/preview/rebind", "/v1/start", "/v1/pause", "/v1/resume", "/v1/resume/preview", "/v1/recovery", "/v1/diagnosis", "/v1/remedy", "/v1/acronyms"].includes(path);
     if (!allowed) fail("ROUTE", "拒绝协议以外的 bridge 请求。");
   }
   function selections(value) {
@@ -355,7 +503,7 @@ var LibrarySyncBridge = (() => {
     }
     return value.map(({ key, include, translate }) => ({ key, include, translate }));
   }
-  function keyUpdates(keys, providers = PROVIDERS) {
+  function keyUpdates(keys, providers = KEY_PROVIDERS) {
     if (!object(keys) || Object.keys(keys).some(p => !providers.includes(p))) fail("INPUT", "密钥字段无效。");
     const sanitized = {};
     for (const p of providers) {
@@ -457,6 +605,51 @@ var LibrarySyncBridge = (() => {
       result.usage = usage;
     }
     return result;
+  }
+  function boundedString(value, limit, label) {
+    if (typeof value !== "string" || value.length > limit) fail("PROTOCOL", `${label}格式不符。`);
+    return value;
+  }
+  function diagnosisResult(value) {
+    // Bounded, redaction-safe contract for the per-paper diagnosis view.
+    if (!object(value) || value.key === undefined || !ITEM_KEY.test(String(value.key)) ||
+        typeof value.citekey !== "string" || typeof value.accepted !== "boolean" ||
+        !Array.isArray(value.classification) || value.classification.length > 8 ||
+        value.classification.some(row => !object(row) || typeof row.category !== "string" ||
+          typeof row.label !== "string" || !Array.isArray(row.evidence) || row.evidence.length > 32 ||
+          row.evidence.some(e => !object(e) || typeof e.message !== "string")) ||
+        !Array.isArray(value.remedies) || value.remedies.length > 16 ||
+        value.remedies.some(row => !object(row) || typeof row.id !== "string" || row.id.length > 40 ||
+          typeof row.label !== "string" || row.label.length > 400 || typeof row.available !== "boolean" ||
+          !["worker", "local", "ledger", "instruction"].includes(row.kind)) ||
+        !object(value.paths) || Object.values(value.paths).some(x => typeof x !== "string") ||
+        typeof value.log_tail !== "string" || value.log_tail.length > 16000) {
+      fail("PROTOCOL", "诊断响应格式不符；未渲染任何处置按钮。");
+    }
+    const qa = value.qa;
+    if (qa !== null && (!object(qa) || typeof qa.ok !== "boolean" || !Array.isArray(qa.errors) ||
+        qa.errors.length > 40 || qa.errors.some(e => !object(e) || typeof e.message !== "string"))) {
+      fail("PROTOCOL", "诊断 QA 部分格式不符。");
+    }
+    if (value.ledger !== null && value.ledger !== undefined && !object(value.ledger)) {
+      fail("PROTOCOL", "诊断账本部分格式不符。");
+    }
+    return value;
+  }
+  function remedyResult(value) {
+    if (!object(value) || typeof value.action !== "string" || value.action.length > 40 ||
+        typeof value.ok !== "boolean" || typeof value.message !== "string" || value.message.length > 2000) {
+      fail("PROTOCOL", "处置结果格式不符；请刷新诊断后重试。");
+    }
+    return value;
+  }
+  function acronymResult(value) {
+    if (!object(value) || typeof value.title !== "string" || typeof value.proposed !== "string" ||
+        !/^[A-Za-z0-9]{1,12}$/.test(value.proposed) || typeof value.changed !== "boolean" ||
+        typeof value.message !== "string") {
+      fail("PROTOCOL", "期刊缩写保存响应格式不符；未改动任何表。");
+    }
+    return value;
   }
   class Client {
     constructor(io, getPaths) {
@@ -601,7 +794,7 @@ var LibrarySyncBridge = (() => {
       return mineruStatus(await this.request("POST", "/v1/mineru", { key }));
     }
     async revealKey(provider) {
-      if (![...PROVIDERS, "mineru"].includes(provider)) fail("INPUT", "不支持的密钥类型。");
+      if (![...KEY_PROVIDERS, "mineru"].includes(provider)) fail("INPUT", "不支持的密钥类型；ZCode 登录不保存可显示的密钥。");
       try {
         const value = await this.request("POST", "/v1/credentials/reveal", { provider, confirm: true });
         this.ensureOpen();
@@ -637,7 +830,7 @@ var LibrarySyncBridge = (() => {
     }
     test(value, role = "qc") {
       if (!["qc", "zh"].includes(role)) fail("INPUT", "测试角色须为 qc 或 zh。");
-      return this.operationRequest("/v1/test", { ...(EXTENDED.some(k => Object.hasOwn(value, k)) ? profile(value) : model(value)), role });
+      return this.operationRequest("/v1/test", { ...(EXTENDED.some(k => Object.hasOwn(value, k)) || value.plan !== undefined ? profile(value) : model(value)), role });
     }
     models(provider, value = null, refresh = true) {
       if (!PROVIDERS.includes(provider)) fail("INPUT", "请选择有效 provider。");
@@ -669,9 +862,11 @@ var LibrarySyncBridge = (() => {
       }
       return result;
     }
-    async resume(runId, finalizeOnly = false) {
-      if (typeof runId !== "string" || !RUN_ID.test(runId) || typeof finalizeOnly !== "boolean") fail("INPUT", "恢复选项无效。");
-      const result = await this.request("POST", "/v1/resume", { run_id: runId, confirm: true, finalize_only: finalizeOnly });
+    async resume(runId, finalizeOnly = false, useSavedModel = false) {
+      if (typeof runId !== "string" || !RUN_ID.test(runId) || typeof finalizeOnly !== "boolean" ||
+          typeof useSavedModel !== "boolean") fail("INPUT", "恢复选项无效。");
+      const result = await this.request("POST", "/v1/resume", { run_id: runId, confirm: true, finalize_only: finalizeOnly,
+        ...(useSavedModel ? { use_saved_model: true } : {}) });
       const joined = result.joined === true || result.already_submitted === true;
       const validSource = typeof result.resume_of === "string" && RUN_ID.test(result.resume_of);
       if (typeof result.run_id !== "string" || !RUN_ID.test(result.run_id) || typeof result.started !== "boolean" ||
@@ -684,10 +879,50 @@ var LibrarySyncBridge = (() => {
       // server IDs intact; the returned run_id is the new attempt to display.
       return { ...result, joined };
     }
+    async resumePreview(runId, recovery = false) {
+      if (typeof runId !== "string" || !RUN_ID.test(runId) || typeof recovery !== "boolean") fail("INPUT", "恢复预览选项无效。");
+      return this.operationRequest("/v1/resume/preview", { run_id: runId, recovery });
+    }
+    async recover(runId, useSavedModel = false) {
+      if (typeof runId !== "string" || !RUN_ID.test(runId) || typeof useSavedModel !== "boolean") fail("INPUT", "遗留恢复选项无效。");
+      const result = await this.request("POST", "/v1/recovery", { run_id: runId, confirm: true,
+        ...(useSavedModel ? { use_saved_model: true } : {}) });
+      if (typeof result.run_id !== "string" || !RUN_ID.test(result.run_id) || typeof result.started !== "boolean") {
+        fail("PROTOCOL", "遗留恢复响应无效；请刷新任务状态。");
+      }
+      return result;
+    }
+    async diagnosis(runId, key) {
+      if (typeof runId !== "string" || !RUN_ID.test(runId) || typeof key !== "string" || !ITEM_KEY.test(key)) {
+        fail("INPUT", "诊断需要有效任务 ID 与 8 位条目 key。");
+      }
+      return diagnosisResult(await this.request("GET", `/v1/diagnosis/${runId}/${key}`));
+    }
+    remedySubmit(runId, key, action, { confirm = false, params = {}, token = "" } = {}) {
+      if (typeof runId !== "string" || !RUN_ID.test(runId) || typeof key !== "string" || !ITEM_KEY.test(key) ||
+          typeof action !== "string" || !/^[a-z_]{1,32}$/.test(action) || typeof confirm !== "boolean" ||
+          !object(params)) fail("INPUT", "处置请求参数无效；未发送。");
+      if (!confirm && (Object.keys(params).length || token)) fail("INPUT", "预览不携带参数或令牌；两者在确认阶段提交。");
+      if (confirm && (typeof token !== "string" || !/^[\x21-\x7e]{8,128}$/.test(token))) {
+        fail("INPUT", "确认处置需要先预览取得一次性令牌。");
+      }
+      return this.operationRequest("/v1/remedy", { run_id: runId, key, action,
+        ...(confirm ? { confirm: true, params, token } : { preview: true }) });
+    }
+    async saveAcronym(title, proposed) {
+      if (typeof title !== "string" || !title.trim() || title.length > 300 || /[\r\n]/.test(title) ||
+          ["=", "+", "-", "@"].some(c => title.trim().startsWith(c))) fail("INPUT", "刊名无效（不能为空、含公式注入或换行）。");
+      if (typeof proposed !== "string" || !/^[A-Za-z0-9]{1,12}$/.test(proposed.trim())) {
+        fail("INPUT", "缩写仅限 1–12 位字母数字（文件名/引用键短码，不是 ISO 4 缩写）。");
+      }
+      return acronymResult(await this.request("POST", "/v1/acronyms",
+        { title: title.trim(), proposed: proposed.trim(), confirm: true }));
+    }
     close() { this.closed = true; this.session = null; this.sensitive.clear(); this.revealedSensitive.clear(); }
   }
-  return { Client, SafeError, errorCategory, selections, paths, descriptor, config, defaults, profile, profileDefaults, tokenInputLimit,
-    habitPresets, habitPreset, modelParameterHelp, modelMaximum, modelDetails, endpointKind, catalogEndpointKind, endpointSignature, publicModelDocs,
-    previewBody, model, keyUpdates, modelChoices, testResult, UUID, ITEM_KEY, RUN_ID, VERSION };
+  return { Client, SafeError, errorCategory, selections, paths, descriptor, config, defaults, profile, profileDefaults, hydrationDefaults, tokenInputLimit,
+    habitPresets, habitPreset, modelParameterHelp, modelMaximum, modelRecommended, recommendedEffort, modelDetails, endpointKind, catalogEndpointKind, endpointSignature, publicModelDocs,
+    bundledCatalog, GLM_STANDARD_CANDIDATES, ZCODE_PLANS, ZCODE_EFFORTS,
+    previewBody, model, keyUpdates, modelChoices, testResult, diagnosisResult, remedyResult, acronymResult, UUID, ITEM_KEY, RUN_ID, VERSION };
 })();
 if (typeof module !== "undefined") module.exports = LibrarySyncBridge;

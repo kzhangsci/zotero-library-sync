@@ -11,6 +11,8 @@ py -3 -B tools/build_library_release.py
 py -3 -B tools/build_library_release.py --apply
 py -3 -B -m unittest discover -s tools -p test_library_release.py
 node --test tools/zotero_library_sync/tests/runtime.test.cjs
+node --test tools/zotero_library_sync/tests/ui-beta15.test.cjs
+py -3 -B -m pytest tools/test_library_control_beta15.py tools/test_plugin_bridge_beta15.py -q
 ```
 
 依赖仅从 Python 官方站和 PyPI 项目发行文件获取。锁文件固定具体版本、wheel 和
@@ -37,8 +39,11 @@ node --test tools/zotero_library_sync/tests/runtime.test.cjs
 site-packages、tools 和 release，关闭用户 site/PYTHONPATH 继承；不安装 pip。
 依赖原 notice 和 DLL 随包保留。Windows/系统组件本身不是本包分发内容。
 
-版本标签和 manifest 均为 `0.2.0-beta.9`；构建检查 manifest 契约，安装版 Zotero
-schema 检查另记录在本地验收报告中。`.invalid` 更新源表示手动更新，不能宣称更新服务就绪。
+版本只有一个来源：`tools/zotero_library_sync/manifest.json`。XPI 构建器、面板资源
+`?v=`、面板显示版本、对话框 URL、诊断版本与 RELEASE.json 全部由它生成或在打包前
+强制比对，任何不一致都会在产出包之前失败（当前为 `0.2.0-beta.15`）；构建检查
+manifest 契约，安装版 Zotero schema 检查另记录在本地验收报告中。`.invalid`
+更新源表示手动更新，不能宣称更新服务就绪。
 所有 ZIP 使用固定时间戳和排序；相同输入/依赖得到相同 bytes。源码包没有 Git 历史。
 
 正式公开前仍需确定许可证、完成获授权的干净 Windows/Zotero 单篇真实服务验收，

@@ -34,7 +34,7 @@ LINE_MIN_CHARS = 12
 COVER_MIN_WORDS = 2
 COVER_MIN_FRAC = 0.5
 READER_RX = re.compile('acrobat|foxit|xodo|pdf-?xchange|pdfxc|quartz|preview|skim|goodnotes|notability|drawboard|pdfelement|nitro|kami|liquidtext|marginnote|zotero|mendeley|iannotate|flexcil|wps', re.I)
-RX_SUPP = re.compile('(?:^|[-_ ])(?:supp(?:l(?:ement(?:ary|al)?)?)?|esm|si|sm|moesm|appendix|附录|补充)(?:[-_ .0-9]|$)', re.I)
+RX_SUPP = re.compile('(?:^|[-_ ])(?:supp(?:l(?:ement(?:ary|al)?)?)?|(?:supplement(?:ary|al)?|supporting)[-_ ]*(?:information|materials?|data|files?)|esm|si|sm|moesm|appendix|附录|补充)(?:[-_ .0-9]|$)', re.I)
 RX_PRE = re.compile('preprint|arxiv|biorxiv|essoar|earthar[xX]iv|submitted|accepted[-_ ]?manuscript', re.I)
 RX_MANU = re.compile('manuscript|draft|原稿|手稿', re.I)
 RX_TRANS = re.compile('translation|translated|译文|中译|英译', re.I)
@@ -216,7 +216,7 @@ def role_of(filename: str, ck: str, n_pdfs: int) -> tuple[str, str, str, str]:
                 return (role, f'stem == citekey + {suffix}', role, '')
         return ('other', f'citekey + unknown suffix {suffix!r}', '待用户定', '')
     if ext not in FULLTEXT_EXT:
-        return (AUX_ROLE.get(ext, 'aux'), f'辅助文件（{ext or '无扩展名'}）', AUX_ROLE.get(ext, 'aux'), '')
+        return (AUX_ROLE.get(ext, 'aux'), f"辅助文件（{ext or '无扩展名'}）", AUX_ROLE.get(ext, 'aux'), '')
     if ext == '.caj':
         return ('caj', 'CAJ 格式（MinerU 无法解析）', 'caj', f'{ck}{ext}' if ck else '')
     if ext == '.pdf' and n_pdfs == 1:
@@ -296,7 +296,7 @@ def main() -> int:
     if a.limit:
         rows = rows[:a.limit]
     todo = [r for r in rows if r['exists'] and r['ext'] == '.pdf']
-    scan_keys = {id(r): f'{r['att_key']}|{r['filename']}|{r['size_bytes']}|{r['_mtime']}|v2' for r in todo}
+    scan_keys = {id(r): f"{r['att_key']}|{r['filename']}|{r['size_bytes']}|{r['_mtime']}|v2" for r in todo}
     need = [r for r in todo if scan_keys[id(r)] not in cache]
     print(f'stored attachments: {len(rows)}  PDFs on disk: {len(todo)}  to scan: {len(need)} (cached {len(todo) - len(need)})')
     if need:
@@ -368,7 +368,7 @@ def compare_phase2(rows: list[dict], path: str) -> str:
         layer['层1 嵌入批注' if r['embed_markup'] else '层3 Zotero 阅读器' if r['zot_annots'] else '层2 疑似压平'] += 1
     outside = sum((1 for k in added if k not in old_all))
     lost = old_ann - new_ann
-    L = ['', f'## 与 phase 2（{Path(path).name}）比对', '', f'- phase 2 的表只覆盖 75 个多附件条目的 {len(old_all)} 个附件；其中 annots>0 的 {len(old_ann)} 个，当时按 `annotated` 打标签的现有 {len(tagged)} 个', f'- 本次覆盖全部 {len(pdfs)} 个 PDF 附件，判定为“有批注”的 {len(new_ann)} 个', f'- **比 phase 2 多找出 {len(added)} 个**，其中 {outside} 个当时根本不在审核表里（单附件条目从未被检查过）', '- 多出来的按识别层分布：' + '；'.join((f'{k} {v}' for k, v in layer.most_common())), f'- phase 2 认为有批注、本次判干净的：{len(lost)}' + (f'（{', '.join(sorted(lost))}）' if lost and len(lost) <= 12 else ''), '']
+    L = ['', f'## 与 phase 2（{Path(path).name}）比对', '', f'- phase 2 的表只覆盖 75 个多附件条目的 {len(old_all)} 个附件；其中 annots>0 的 {len(old_ann)} 个，当时按 `annotated` 打标签的现有 {len(tagged)} 个', f'- 本次覆盖全部 {len(pdfs)} 个 PDF 附件，判定为“有批注”的 {len(new_ann)} 个', f'- **比 phase 2 多找出 {len(added)} 个**，其中 {outside} 个当时根本不在审核表里（单附件条目从未被检查过）', '- 多出来的按识别层分布：' + '；'.join((f'{k} {v}' for k, v in layer.most_common())), f'- phase 2 认为有批注、本次判干净的：{len(lost)}' + (f"（{', '.join(sorted(lost))}）" if lost and len(lost) <= 12 else ''), '']
     return '\n'.join(L) + '\n'
 
 def summarize(rows: list[dict], reg: dict, date: str) -> str:
@@ -414,7 +414,7 @@ def summarize(rows: list[dict], reg: dict, date: str) -> str:
     gb = sum((x[3] for x in cat['need_annotated_copy'])) / 1024 ** 3
     ann_rows = [r for r in rows if r['ext'] == '.pdf']
     verd = Counter((r['verdict'] for r in ann_rows))
-    L = [f'# 附件审计 {date}（只读）', '', f'常规条目 {n_items}；存储附件 {len(rows)}（PDF {len(ann_rows)}，磁盘上 {sum((1 for r in rows if r['exists']))}）', '', '## 批注识别（每个 PDF 附件一票，优先级 嵌入 > Zotero 阅读器 > 疑似压平）', '', *[f'- {k}: {v}' for k, v in verd.most_common()], '', f'- 层 1 嵌入批注的附件：{sum((1 for r in ann_rows if r['embed_markup']))}', f'- 层 2 疑似压平（无嵌入批注）：{sum((1 for r in ann_rows if r['flat_marks'] and (not r['embed_markup'])))}', f'- 层 3 Zotero 阅读器批注的附件：{sum((1 for r in ann_rows if r['zot_annots']))}（批注总数 {sum((r['zot_annots'] for r in ann_rows))}）', f'- Zotero `annotated` 标签的附件：{sum((1 for r in rows if 'annotated' in (r['att_tags'] or '')))}', f'- 阅读器痕迹（producer/creator）：{sum((1 for r in ann_rows if r['reader_hint']))}', '- 嵌入批注的署名分布（层 1，用来区分用户批注与出版商批注）：' + '；'.join((f'{k} {v}' for k, v in Counter((kv.split(':')[0] for r in ann_rows for kv in (r.get('embed_authors') or '').split(',') if kv)).most_common(8))), '', '## 条目分类', '', f'| 类别 | 条目数 | 动作 |', '|---|---|---|', f'| 有干净正本、缺批注本 | {len(cat['need_annotated_copy'])} | copy_as_annotated（约 {gb:.1f} GB） |', f'| 正本本身有嵌入批注、且还没有批注本 | {len(cat['dirty_primary_no_annotated'])} | 先 swap 再算批注本（需用户确认） |', f'| 正本本身有嵌入批注（含已有批注本的） | {len(cat['primary_annotated'])} | swap_annotated_primary（需用户确认） |', f'| 正本有疑似压平批注 | {len(cat['primary_flat_suspect'])} | 人工看 |', f'| 已有批注本 | {len(cat['has_annotated'])} | 无 |', f'| 无 PDF | {len(cat['no_pdf'])} | 无 |', f'| 有 PDF 但没有 `<ck>.pdf` 正本 | {len(cat['no_primary'])} | rename |', f'| 文件名不按键（附件数） | {len(cat['misnamed'])} | rename |', f'| 多 PDF 且无正本、角色难判 | {len(cat['ambiguous'])} | 需用户决定 |', f'| 阅读器批注挂在正本上 | {len(cat['reader_on_primary'])} | 可选 move_annotations |', '']
+    L = [f'# 附件审计 {date}（只读）', '', f"常规条目 {n_items}；存储附件 {len(rows)}（PDF {len(ann_rows)}，磁盘上 {sum((1 for r in rows if r['exists']))}）", '', '## 批注识别（每个 PDF 附件一票，优先级 嵌入 > Zotero 阅读器 > 疑似压平）', '', *[f'- {k}: {v}' for k, v in verd.most_common()], '', f"- 层 1 嵌入批注的附件：{sum((1 for r in ann_rows if r['embed_markup']))}", f"- 层 2 疑似压平（无嵌入批注）：{sum((1 for r in ann_rows if r['flat_marks'] and (not r['embed_markup'])))}", f"- 层 3 Zotero 阅读器批注的附件：{sum((1 for r in ann_rows if r['zot_annots']))}（批注总数 {sum((r['zot_annots'] for r in ann_rows))}）", f"- Zotero `annotated` 标签的附件：{sum((1 for r in rows if 'annotated' in (r['att_tags'] or '')))}", f"- 阅读器痕迹（producer/creator）：{sum((1 for r in ann_rows if r['reader_hint']))}", '- 嵌入批注的署名分布（层 1，用来区分用户批注与出版商批注）：' + '；'.join((f'{k} {v}' for k, v in Counter((kv.split(':')[0] for r in ann_rows for kv in (r.get('embed_authors') or '').split(',') if kv)).most_common(8))), '', '## 条目分类', '', f'| 类别 | 条目数 | 动作 |', '|---|---|---|', f"| 有干净正本、缺批注本 | {len(cat['need_annotated_copy'])} | copy_as_annotated（约 {gb:.1f} GB） |", f"| 正本本身有嵌入批注、且还没有批注本 | {len(cat['dirty_primary_no_annotated'])} | 先 swap 再算批注本（需用户确认） |", f"| 正本本身有嵌入批注（含已有批注本的） | {len(cat['primary_annotated'])} | swap_annotated_primary（需用户确认） |", f"| 正本有疑似压平批注 | {len(cat['primary_flat_suspect'])} | 人工看 |", f"| 已有批注本 | {len(cat['has_annotated'])} | 无 |", f"| 无 PDF | {len(cat['no_pdf'])} | 无 |", f"| 有 PDF 但没有 `<ck>.pdf` 正本 | {len(cat['no_primary'])} | rename |", f"| 文件名不按键（附件数） | {len(cat['misnamed'])} | rename |", f"| 多 PDF 且无正本、角色难判 | {len(cat['ambiguous'])} | 需用户决定 |", f"| 阅读器批注挂在正本上 | {len(cat['reader_on_primary'])} | 可选 move_annotations |", '']
 
     def block(title: str, key: str, fmt, head: int=40) -> None:
         L.extend([f'## {title}（{len(cat[key])}）', ''])
@@ -422,9 +422,9 @@ def summarize(rows: list[dict], reg: dict, date: str) -> str:
         if len(cat[key]) > head:
             L.append(f'- …其余 {len(cat[key]) - head} 条见 CSV')
         L.append('')
-    block('正本本身有嵌入批注（现正本→_annotated，去批注副本作新正本）', 'primary_annotated', lambda x: f'- `{x[0]}` {x[1]}/{x[2]}：{x[3]} 处（{x[4]}），{x[5]} 页，署名 {x[6] or '(无)'}')
+    block('正本本身有嵌入批注（现正本→_annotated，去批注副本作新正本）', 'primary_annotated', lambda x: f"- `{x[0]}` {x[1]}/{x[2]}：{x[3]} 处（{x[4]}），{x[5]} 页，署名 {x[6] or '(无)'}")
     block('正本有疑似压平批注（只是嫌疑，需人工看）', 'primary_flat_suspect', lambda x: f'- `{x[0]}` {x[1]}/{x[2]}：{x[3]} 页 {x[4]} 处 [{x[5]}] {x[6]}')
-    block('文件名不按键（建议改名）', 'misnamed', lambda x: f'- `{x[0]}` {x[1]}/{x[2]}：`{x[3]}` → {x[4]}{(' `' + x[5] + '`' if x[5] else '（待定）')}')
+    block('文件名不按键（建议改名）', 'misnamed', lambda x: f"- `{x[0]}` {x[1]}/{x[2]}：`{x[3]}` → {x[4]}{(' `' + x[5] + '`' if x[5] else '（待定）')}")
     block('多 PDF 且无 `<ck>.pdf`，角色难判（需用户决定）', 'ambiguous', lambda x: f'- `{x[0]}` {x[1]}：' + ' | '.join((f'`{f}`' for f in x[2])))
     block('有 PDF 但没有正本', 'no_primary', lambda x: f'- `{x[0]}` {x[1]}：' + ' | '.join((f'`{f}`' for f in x[2])))
     block('无 PDF', 'no_pdf', lambda x: f'- `{x[0]}` {x[1]}：{x[2]}', head=30)

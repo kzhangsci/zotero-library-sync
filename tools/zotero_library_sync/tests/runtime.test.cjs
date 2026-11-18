@@ -6,14 +6,20 @@ const path = require("node:path");
 const vm = require("node:vm");
 const { ROOT, PATHS, Element, Document } = require("./helpers.cjs");
 function runtime() {
-  const counters = { registered: 0, destroyed: 0, opens: 0, launches: [], writes: [], xhrs: [], missing: new Set(), directories: new Set() };
+  const counters = { registered: 0, destroyed: 0, opens: 0, launches: [], writes: [], xhrs: [], missing: new Set(), directories: new Set(), dialogs: [] };
   const docs = new Document();
   docs.elements.set("menu_ToolsPopup", new Element()); docs.elements.set("zotero-itemmenu", new Element());
   const win = { document: docs, ZoteroPane: { getSelectedItems: () => [] }, closed: false,
     openDialog(url, name, features, args) {
       counters.opens++; counters.dialog = { url, name, features };
-      return { closed: false, arguments: [args], focus() {}, close() { this.closed = true; } };
-    } };
+      // A Gecko-like dialog window: event listeners, its own panel document
+      // (parsed from the real panel.xhtml) and a close that fires "unload".
+      const dialog = Object.assign(new Element("window"), { document: new Document(), closed: false, arguments: [args],
+        focus() {}, close() { if (this.closed) return; this.closed = true; void this.emit("unload"); } });
+      counters.dialogs.push(dialog);
+      return dialog;
+    },
+    alert(message) { counters.alerts = (counters.alerts || []); counters.alerts.push(String(message)); } };
   const file = () => ({ initWithPath(p) { this.path = p; this.leafName = p.split("\\").at(-1); },
     exists() { return !counters.missing.has(this.path); }, isFile() { return !counters.directories.has(this.path); } });
   const classes = {
@@ -211,6 +217,69 @@ test("menus share one nonmodal panel; disable removes menus without stopping bac
   assert.equal(r.context.LibrarySync.panel.arguments[0].selected, true);
   r.context.shutdown(); assert.equal(r.counters.destroyed, 1);
   assert.equal(r.docs.getElementById("menu_ToolsPopup").children.length, 0); assert.equal(r.counters.launches.length, 0);
+});
+
+test("panel ready handshake cancels the bounded watch and keeps the window open", async () => {
+  const r = runtime(); await r.context.startup({ rootURI: "chrome://test/" });
+  r.context.LibrarySync.PANEL_READY_TIMEOUT_MS = 15;
+  r.context.LibrarySync.openPanel(r.win, false);
+  const dialog = r.context.LibrarySync.panel;
+  assert.ok(dialog); assert.ok(r.context.LibrarySync.panelWatch);
+  // The panel's explicit ready signal settles the host handshake.
+  await dialog.emit("library-sync-ready");
+  assert.equal(r.context.LibrarySync.panelWatch, null);
+  await new Promise(resolve => setTimeout(resolve, 40));
+  assert.equal(dialog.closed, false);            // no timeout fallback may fire after ready
+  assert.equal(r.context.LibrarySync.panel, dialog);
+  r.context.LibrarySync.panelReady(dialog);      // the host callback path is idempotent
+  assert.equal(r.context.LibrarySync.panelWatch, null);
+  r.context.shutdown();
+});
+
+test("a panel that never signals ready is diagnosed, closed and can be reopened", async () => {
+  const r = runtime(); await r.context.startup({ rootURI: "chrome://test/" });
+  r.context.LibrarySync.PANEL_READY_TIMEOUT_MS = 10;
+  r.context.LibrarySync.openPanel(r.win, false);
+  const dead = r.context.LibrarySync.panel;
+  await new Promise(resolve => setTimeout(resolve, 40));
+  assert.equal(dead.closed, true);                       // the bounded timeout closed the dead window
+  assert.equal(r.context.LibrarySync.panel, null);       // no stale panel reference survives
+  const note = dead.document.getElementById("message");
+  assert.equal(note.getAttribute("data-error"), "true");
+  assert.match(note.textContent, /就绪信号|初始化未在限定时间内完成/);
+  assert.equal(r.context.LibrarySync.panelWatch, null);
+  // The failed window is reopenable: a fresh dialog becomes the panel.
+  r.context.LibrarySync.PANEL_READY_TIMEOUT_MS = 30000;
+  r.context.LibrarySync.openPanel(r.win, false);
+  assert.notEqual(r.context.LibrarySync.panel, dead);
+  assert.equal(r.counters.opens, 2);
+  r.context.shutdown();
+});
+
+test("openDialog failure never leaves a dead panel reference and reports via the host", async () => {
+  const r = runtime(); await r.context.startup({ rootURI: "chrome://test/" });
+  const original = r.win.openDialog;
+  r.win.openDialog = () => { throw new Error("chrome registration failed (synthetic)"); };
+  r.context.LibrarySync.openPanel(r.win, false);
+  assert.equal(r.context.LibrarySync.panel, null);
+  assert.equal(r.context.LibrarySync.panelWatch, null);
+  r.win.openDialog = original;
+  r.context.LibrarySync.openPanel(r.win, false);
+  assert.ok(r.context.LibrarySync.panel);   // the menu still opens a fresh panel
+  r.context.shutdown();
+});
+
+test("panel unload drops the panel reference so the menu opens a new window", async () => {
+  const r = runtime(); await r.context.startup({ rootURI: "chrome://test/" });
+  r.context.LibrarySync.PANEL_READY_TIMEOUT_MS = 30000;
+  r.context.LibrarySync.openPanel(r.win, false);
+  const first = r.context.LibrarySync.panel;
+  first.close();                       // the user closes the panel window
+  await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+  assert.equal(r.context.LibrarySync.panel, null);
+  r.context.LibrarySync.openPanel(r.win, false);
+  assert.equal(r.counters.opens, 2);
+  r.context.shutdown();
 });
 test("Gecko adapter uses only nsIProcess argument array; only two prefs persist", async () => {
   const r = runtime(); await r.context.startup({ rootURI: "chrome://test/" });

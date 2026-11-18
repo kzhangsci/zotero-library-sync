@@ -748,7 +748,7 @@ class Client:
 
     def _upload(self, item, data, info, filename, progress, *, precondition=None):
         self._stored(item)
-        endpoint = f'items/{item['key']}/file'
+        endpoint = f"items/{item['key']}/file"
         condition = dict(precondition) if precondition is not None else self._precondition(item)
         progress('upload_authorization_attempted', None)
         response = self._api('POST', endpoint, headers=condition, data={'md5': info['md5'], 'filename': filename, 'filesize': str(info['size']), 'mtime': str(info['mtime'])})

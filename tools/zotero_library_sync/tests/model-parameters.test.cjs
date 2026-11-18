@@ -46,8 +46,57 @@ test("public preset guidance describes explicit draft replacement and contains n
   assert.match(markup, /不代表客户端当前配置/);
   assert.doesNotMatch(markup, /仅空白配置|本机非敏感配置快照|本次核对的 ZCode|ZCode 主模型/);
   const source = fs.readFileSync(path.join(ROOT, "bridge-client.js"), "utf8");
-  assert.doesNotMatch(source, /本机 ZCode|本机 dsh|dsh 已显式选择|manually checked snapshot/);
+  // Habit presets must never claim live client configuration. The zcode login
+  // provider is different — but since beta.14 its help text must state the
+  // honest unavailability, never a "no-key login that just works" claim.
+  assert.doesNotMatch(source, /本机 dsh|dsh 已显式选择|manually checked snapshot/);
+  const presetScope = source.slice(source.indexOf("function habitPresets"), source.indexOf("function habitPreset"));
+  assert.doesNotMatch(presetScope, /本机 ZCode/);
+  // beta.14 honest-routing language replaces both the old auto-route claim and
+  // the stopped pass's "explicit bigmodel CLI route" claim.
+  assert.match(source, /ZCode 登录 · Coding Plan：beta\.14 起新版后台不再经本机 CLI 直连执行/);
+  assert.match(source, /不复制本机 ZCode 凭据/);
 });
+
+test("zcode login provider: no key, no endpoint fields, fixed model set and effort levels", () => {
+  const base = { provider: "zcode", model: "glm-5.3-flash", reasoning_effort: "max", timeout: 1500, max_tokens: 128000 };
+  assert.deepEqual(Bridge.profile(base), { ...base, plan: "coding" });
+  assert.equal(Bridge.tokenInputLimit("zcode"), 128000);
+  assert.equal(Bridge.endpointKind(base), "zcode");
+  assert.equal(Bridge.catalogEndpointKind(base), "zcode");
+  // Endpoint/protocol/extra fields are rejected instead of silently ignored.
+  assert.throws(() => Bridge.profile({ ...base, base_url: "https://x.example" }), { code: "INPUT" });
+  assert.throws(() => Bridge.profile({ ...base, thinking: "enabled" }), { code: "INPUT" });
+  assert.throws(() => Bridge.profile({ ...base, extra_body: {} }), { code: "INPUT" });
+  assert.throws(() => Bridge.profile({ ...base, reasoning_effort: "xhigh" }), { code: "INPUT" });
+  assert.throws(() => Bridge.profile({ ...base, model: "glm-4.6" }), { code: "INPUT" });
+  // The CLI's documented levels all validate; fresh templates prefer high.
+  for (const effort of ["default", "low", "high", "max"]) {
+    assert.equal(Bridge.profile({ ...base, reasoning_effort: effort }).reasoning_effort, effort);
+  }
+  assert.equal(Bridge.profileDefaults("zcode").reasoning_effort, "high");
+  // The bundled listing passes validation and keeps its provenance marks.
+  const zcodeChoices = Bridge.modelChoices(fixtureChoicesZcode(), "zcode");
+  assert.equal(zcodeChoices.source, "bundled_catalog");
+  assert.equal(zcodeChoices.endpoint_kind, "zcode");
+  // Defaults hydrate without endpoint URLs; empty model passes for listings.
+  const listing = Bridge.profile({ ...base, model: "" }, true);
+  assert.equal(listing.model, ""); assert.ok(!("base_url" in listing));
+  const help = Bridge.modelParameterHelp(base, null);
+  assert.deepEqual(help.effortLevels, ["default", "low", "high", "max"]);
+  // Honest unavailability: no callable CLI route, no "no-key login" marketing,
+  // and no invented parameter recommendation for a provider that cannot run.
+  assert.match(help.endpointHelp, /beta\.14 起新版后台不再经本机 CLI 直连执行/);
+  assert.match(help.endpointHelp, /不复制本机 ZCode 凭据/);
+  assert.match(help.endpointHelp, /旧版后台（beta\.13 及更早）的该调用会复制本机完整凭据，插件同样不再发送/);
+  assert.equal(help.maximum, null);
+  assert.equal(help.recommended, null);
+});
+
+function fixtureChoicesZcode() {
+  return { provider: "zcode", models: ["glm-5.3", "glm-5.3-flash"], source: "bundled_catalog",
+    notice: "复用本机 ZCode 的 GLM 登录。", fetched_at: null, endpoint_kind: "zcode" };
+}
 
 test("explicit preset fills one blank role only; it never saves, reads another client, tests or starts", async () => {
   const u = blankUI(); await u.controller.init();
@@ -58,6 +107,7 @@ test("explicit preset fills one blank role only; it never saves, reads another c
   assert.equal(u.el("qc-model").value, ""); // Choosing is not applying.
   await u.el("qc-apply-habit").emit("click");
   assert.equal(u.el("qc-model").value, "glm-5.3"); assert.equal(u.el("qc-effort").value, "max");
+  assert.equal(u.el("qc-base-url").value, "https://open.bigmodel.cn/api/paas/v4");
   assert.equal(u.controller.configDirty, true); assert.equal(u.el("qc-apply-habit").disabled, false);
   assert.deepEqual(u.controller.readModel("zh"), before.zh);
   assert.deepEqual(u.controller.savedConfig, before.saved);

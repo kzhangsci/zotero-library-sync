@@ -86,7 +86,13 @@ test("initial UI only reads; 3-second poll and no config still show status", asy
   assert.equal([...u.intervals.values()][0].ms, 3000);
   assert.equal(u.el("status-text").textContent, f.state.text); assert.equal(u.el("save-config").disabled, false);
   assert.equal(u.el("discover").disabled, true); assert.equal(u.el("start").disabled, true);
-  await u.controller.tick(); assert.equal(f.requests.at(-1).method, "GET"); u.controller.close();
+  // The poll's status read stays GET; the only POSTs the first poll may add
+  // are the sanctioned open-time GLM catalog auto-refreshes (never writes).
+  await u.controller.tick();
+  const posts = f.requests.filter(r => r.method === "POST");
+  assert.ok(posts.every(r => ["/v1/credentials/reveal", "/v1/models"].includes(new URL(r.url).pathname)));
+  assert.ok(f.requests.some(r => r.method === "GET" && new URL(r.url).pathname === "/v1/status"));
+  u.controller.close();
 });
 test("empty selection never becomes discovery; explicit discovery sends empty keys", async () => {
   const u = ui(); await u.controller.init(); u.host.getSelection = () => ({ items: [], ignored: 1 });
@@ -321,6 +327,9 @@ test("model requests send independent flat profiles; errors retain safe explanat
 test("model test buttons send explicit stage roles even when QC and ZH use the same profile", async () => {
   const f = fixture(); f.publicConfig.config.zh = structuredClone(f.publicConfig.config.qc);
   const u = ui(f); await u.controller.init();
+  // Let the open-time GLM catalog auto-refresh settle first (its invalid mock
+  // result must not overwrite the role test outputs asserted below).
+  await u.controller.tick(); await u.controller.tick();
   f.operationResult = { ok: true };
   for (const role of ["qc", "zh"]) {
     await u.el(role + "-test").emit("click");
@@ -332,7 +341,10 @@ test("model test buttons send explicit stage roles even when QC and ZH use the s
     await u.controller.tick();
     assert.ok(u.el("model-result").textContent.startsWith(role.toUpperCase()));
   }
-  assert.equal(f.posts("/v1/test").length, 2); assert.equal(f.posts("/v1/models").length, 0);
+  // The only catalog requests are the open-time auto refreshes of the bundled
+  // GLM seeds for BOTH glm roles (qc and the cloned zh — one each, async by
+  // design since beta.14), never a test-role request.
+  assert.equal(f.posts("/v1/test").length, 2); assert.equal(f.posts("/v1/models").length, 2);
   assert.equal(f.posts("/v1/config").length, 0); assert.equal(f.posts("/v1/start").length, 0);
   u.controller.close();
 });
@@ -393,7 +405,12 @@ test("inline model picker mouse clicks fill only its role and keep the preview a
   u.el("qc-model").value = "my-custom-model"; await u.el("qc-model").emit("input");
   assert.equal(u.el("qc-model").value, "my-custom-model");
   await clickOption(u, "qc-provider", "DeepSeek");
-  assert.equal(u.el("qc-model").disabled, false); assert.equal(u.controller.modelOptions.qc, null);
+  assert.equal(u.el("qc-model").disabled, false);
+  // Switching to an official default endpoint immediately reseeds the bundled
+  // offline snapshot; the hand-typed model survives and is never overwritten.
+  assert.ok(u.controller.modelOptions.qc);
+  assert.equal(u.controller.modelOptions.qc.source, "bundled_catalog");
+  assert.equal(u.controller.modelOptions.qc.seeded, true);
   assert.equal(u.el("qc-model").value, "my-custom-model"); u.controller.close();
 });
 test("refreshed or empty model choices cannot reuse stale option clicks or overwrite a typed model", async () => {
@@ -457,12 +474,16 @@ test("model results for stale providers and malformed IDs cannot replace model c
   const u = ui(); await u.controller.init();
   await u.controller.modelAction("qc", "models");
   const record = { ...u.controller.catalogPending.qc };
+  // The bundled offline seed is the current legit listing; a stale or
+  // malformed response may neither replace nor delete it.
+  const seeded = u.controller.modelOptions.qc;
+  assert.ok(seeded); assert.equal(seeded.seeded, true);
   u.el("qc-provider").value = "deepseek";
   u.controller.renderModelResult({ ...record, kind: "models" }, { provider: "glm", models: ["glm-one"], source: "bundled_catalog", notice: "candidate" });
-  assert.equal(u.controller.modelOptions.qc, null);
+  assert.strictEqual(u.controller.modelOptions.qc, seeded);
   u.el("qc-provider").value = "glm";
   u.controller.renderModelResult({ ...record, kind: "models" }, { provider: "glm", models: ["<img src=x>"], source: "bundled_catalog", notice: "bad" });
-  assert.equal(u.controller.modelOptions.qc, null);
+  assert.strictEqual(u.controller.modelOptions.qc, seeded);
   assert.match(u.el("qc-model-notice").textContent, /响应无效/); u.controller.close();
 });
 test("pending model lists are bound to the exact base URL, models URL and protocol", async () => {
@@ -519,10 +540,15 @@ test("effort suggestions use exact model metadata, allow mouse choice and preser
     assert.match(u.el("qc-effort-notice").textContent, /服务端默认 high/);
     assert.match(u.el("qc-effort-notice").textContent, source === "provider_api" ? /接口元数据/ : /官方文档/);
     await clickOption(u, "qc-effort", "minimal"); assert.equal(u.el("qc-effort").value, "minimal");
+    // Selecting a known model fills the RECOMMENDED defaults (user preference:
+    // thinking on + effort high, falling back to the closest documented level
+    // when high is absent — here [low, medium] fills medium). The hand-picked
+    // value is replaced in the draft; every level remains manually selectable.
     await clickOption(u, "qc-model", "glm-other");
-    assert.deepEqual(levels(), ["default", "low", "medium"]); assert.equal(u.el("qc-effort").value, "minimal");
+    assert.deepEqual(levels(), ["default", "low", "medium"]); assert.equal(u.el("qc-effort").value, "medium");
+    assert.match(u.el("qc-maximum-notice").textContent, /回退到文档支持的 medium/);
     await clickOption(u, "qc-model", "glm-test-model-preview");
-    assert.deepEqual(levels(), ["default"]); assert.equal(u.el("qc-effort").value, "minimal");
+    assert.deepEqual(levels(), ["default"]); assert.equal(u.el("qc-effort").value, "medium");
     assert.match(u.el("qc-effort-notice").textContent, /未绑定固定 effort 档位/);
     u.el("qc-model").value = "GLM-test-model"; await u.el("qc-model").emit("input");
     assert.deepEqual(levels(), ["default"]);
@@ -706,7 +732,11 @@ test("expired operation releases controls and displays the bridge explanation", 
 
 test("real HTTP status business failures preserve connection, settings and pending operations", async () => {
   for (const status of [400, 422, 500]) {
-    const u = ui(); await u.controller.init(); await u.controller.modelAction("qc", "test");
+    const u = ui(); await u.controller.init();
+    // Settle the open-time catalog auto-refresh so its own operation result
+    // cannot overwrite the role-test output asserted below.
+    await u.controller.tick(); await u.controller.tick();
+    await u.controller.modelAction("qc", "test");
     u.f.operationResult = { ok: true };
     u.f.override = r => new URL(r.url).pathname === "/v1/status"
       ? { status, data: { error: "文献 citekey 路径无效 " + TOKEN } } : undefined;

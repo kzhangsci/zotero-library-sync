@@ -24,6 +24,7 @@ WIKI_IMAGE = re.compile('!\\[\\[([^\\]\\n]+)\\]\\]')
 HTML_IMAGE = re.compile('<img\\b[^>]*\\bsrc\\s*=\\s*[\\"\\x27]([^\\"\\x27]+)[\\"\\x27]', re.I)
 DISPLAY = re.compile('(?<!\\\\)\\$\\$.*?(?<!\\\\)\\$\\$|\\\\\\[.*?\\\\\\]|\\\\begin\\{(equation\\*?|align\\*?|gather\\*?|multline\\*?)\\}.*?\\\\end\\{\\1\\}', re.S)
 MARKER = re.compile('^\\s*(?:#{1,6}\\s*)?(\\[\\d+\\]|【\\d+】|\\d+[.)])(?:[ \\t]*(.*))?$')
+LABEL_LINE = re.compile('\\*{0,2}\\([a-z0-9]{1,4}(?:\\s*[,，]\\s*[a-z0-9]{1,4})*\\)\\*{0,2}\\.?')
 PLACEHOLDER = re.compile("此段模型拒绝翻译|(?:无法|不能|拒绝|未能)(?:提供)?(?:此段|该段|这段|全文|该内容|此内容)?(?:的)?翻译|translation (?:failed|missing paragraphs)|missing paragraphs|(?:unable|cannot|can't|refuse) to translate|\\[translation failed\\]", re.I)
 STALL = re.compile('(?:稍后|待补充|待翻译|正在核对|正在处理|正在读取|请稍等)|will (?:provide|translate)|let me (?:check|read)|checking the', re.I)
 SEMANTIC_LIMIT = '自动 QA 仅检查元信息、文件和结构覆盖；非空译文仍可能漏译句子、错译术语、数值、否定或因果关系。不能保证科学正确，不能替代原 QC 护栏、PDF 对照和人工语义审阅；未调用 LLM。'
@@ -82,6 +83,21 @@ def _reference_segments(body: str) -> list[tuple[str, bool]]:
 def _paragraphs(text: str) -> list[str]:
     return [p.strip() for p in re.split('\\n\\s*\\n', text) if p.strip()]
 
+def image_only_line(line: str) -> bool:
+    stripped = line.strip()
+    if IMAGE.fullmatch(stripped) or WIKI_IMAGE.fullmatch(stripped):
+        return True
+    return not re.sub('\\s+', '', HTML_IMAGE.sub('', stripped))
+
+def image_only_paragraph(text: str) -> bool:
+    lines = [line for line in text.splitlines() if line.strip()]
+    return bool(lines) and all((image_only_line(line) for line in lines))
+
+def label_image_paragraph(text: str) -> bool:
+    lines = [line for line in text.splitlines() if line.strip()]
+    labels = [line for line in lines if not image_only_line(line)]
+    return bool(labels) and len(labels) < len(lines) and all((LABEL_LINE.fullmatch(line.strip()) for line in labels))
+
 def _kind(text: str) -> str:
     if text.startswith('#'):
         return 'heading'
@@ -89,6 +105,8 @@ def _kind(text: str) -> str:
         return 'image'
     if text.startswith('$$') and text.rstrip().endswith('$$'):
         return 'formula'
+    if label_image_paragraph(text):
+        return 'label_image'
     return 'quote'
 
 def _expected_units(body: str) -> list[dict]:
@@ -126,11 +144,26 @@ def _actual_units(body: str, title: str, errors: list, file: str) -> list[dict]:
                 if not lines or any((not line.startswith('>') for line in lines)):
                     _issue(errors, 'quote_format', '英文 quote 格式损坏或内容为空。', file=file, unit=len(units) + 1)
                 en = '\n'.join((re.sub('^> ?', '', line) for line in lines))
-                zh = ''
-                if i + 1 < len(parts) and (not parts[i + 1].startswith('>')) and (_kind(parts[i + 1]) == 'quote'):
-                    i += 1
-                    zh = parts[i]
-                units.append({'kind': 'quote', 'text': en, 'translation': zh})
+                source = set(map(_image_key, _images(en)))
+                blocks, took_prose = ([], False)
+                while i + 1 < len(parts) and (not parts[i + 1].startswith('>')):
+                    nxt = parts[i + 1]
+                    images = list(map(_image_key, _images(nxt)))
+                    if _kind(nxt) == 'quote' and (not took_prose):
+                        i += 1
+                        blocks.append(nxt)
+                        took_prose = True
+                        continue
+                    if images and all((t in source for t in images)) and (image_only_paragraph(nxt) or not blocks):
+                        i += 1
+                        blocks.append(nxt)
+                        continue
+                    break
+                translation = '\n\n'.join(blocks)
+                if label_image_paragraph(en) and _norm(translation) == _norm(en):
+                    units.append({'kind': 'label_image', 'text': translation})
+                else:
+                    units.append({'kind': 'quote', 'text': en, 'translation': translation})
             else:
                 kind = _kind(paragraph)
                 units.append({'kind': 'orphan' if kind == 'quote' else kind, 'text': paragraph})
@@ -176,6 +209,9 @@ def _display_math(text: str, errors: list, file: str) -> list[str]:
 
 def _translation_checks(text: str, source: str, errors: list, warnings: list, file: str, unit: int) -> None:
     plain = re.sub('<!--.*?-->', '', text, flags=re.S).strip()
+    if _images(plain) and image_only_paragraph(plain) and (not (image_only_paragraph(source) or label_image_paragraph(source))):
+        _issue(errors, 'translation_empty', '原段含正文，译文只保留了图片。', file=file, unit=unit)
+        return
     visible = re.sub('[\\s*_`#>\\-…。.]+', '', plain)
     if not visible or plain.startswith('```'):
         _issue(errors, 'translation_empty', 'quote 后缺少可见译文正文。', file=file, unit=unit)

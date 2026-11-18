@@ -115,10 +115,10 @@ def build_actions(rows: list[dict], storage: Path, *, no_copy: bool=False, no_sw
                 stats['explicit_decision'] += 1
         for r in pdfs + [r for r in rs if r['ext'] != '.pdf' and str(r['exists']) == 'True']:
             if r['role'] == 'other' and r['suggested_name']:
-                actions.append({'action': 'rename', 'itemKey': ikey, 'citekey': ck, 'attKey': r['att_key'], 'oldName': r['filename'], 'newName': r['suggested_name'], 'why': f'{r['role_basis']} → {r['suggested_role']}'})
+                actions.append({'action': 'rename', 'itemKey': ikey, 'citekey': ck, 'attKey': r['att_key'], 'oldName': r['filename'], 'newName': r['suggested_name'], 'why': f"{r['role_basis']} → {r['suggested_role']}"})
                 stats['rename'] += 1
             elif r['role'] == 'other':
-                skipped.append(f'{ck} {r['att_key']} `{r['filename']}`：角色待用户定')
+                skipped.append(f"{ck} {r['att_key']} `{r['filename']}`：角色待用户定")
                 stats['undecided_attachment'] += 1
         names_after = {r['suggested_name'] or r['filename'] for r in pdfs}
         prim = next((r for r in pdfs if role_after(r) == 'primary'), None)
@@ -255,7 +255,7 @@ def main() -> int:
         stats['clean_missing'] = len(missing_clean)
         skipped.extend((f'{ck}：去批注副本还没生成（跑 --make-clean）' for ck in missing_clean[:20]))
     spec = {'generated': dt.datetime.now().isoformat(timespec='seconds'), 'source_audit': str(a.audit), 'actions': actions, 'stats': dict(stats) | {'copy_gb': round(copy_gb, 2), 'clean_gb': round(clean_gb, 2), 'actions': len(actions), 'by_action': dict(counts)}}
-    L = [f'# 附件规范化规格 · {spec['generated']}', '', f'来源：`{a.audit}`', '', '## 动作数（按类型）', '', *[f'- {k}: {v}' for k, v in sorted(counts.items())], f'- **合计 {len(actions)}**', '', '## 统计', '', *[f'- {k}: {v}' for k, v in sorted(stats.items())], f'- 复制批注本预计新增：{copy_gb:.2f} GB', f'- 去批注副本预计新增：{clean_gb:.2f} GB（正本侧）', f'- **Zotero storage 预计新增合计：{copy_gb + clean_gb:.2f} GB**', '', f'## 需用户决定 / 跳过 / 最终状态不完整（{len(skipped)}）', ''] + [f'- {s}' for s in skipped[:80]]
+    L = [f"# 附件规范化规格 · {spec['generated']}", '', f'来源：`{a.audit}`', '', '## 动作数（按类型）', '', *[f'- {k}: {v}' for k, v in sorted(counts.items())], f'- **合计 {len(actions)}**', '', '## 统计', '', *[f'- {k}: {v}' for k, v in sorted(stats.items())], f'- 复制批注本预计新增：{copy_gb:.2f} GB', f'- 去批注副本预计新增：{clean_gb:.2f} GB（正本侧）', f'- **Zotero storage 预计新增合计：{copy_gb + clean_gb:.2f} GB**', '', f'## 需用户决定 / 跳过 / 最终状态不完整（{len(skipped)}）', ''] + [f'- {s}' for s in skipped[:80]]
     if len(skipped) > 80:
         L.append(f'- …其余 {len(skipped) - 80} 条')
     if clean_notes:

@@ -79,7 +79,7 @@ def expected_note_hash(paper, before, qa_frozen):
     run_id = candidate.parent.name
     if not RUN_ID.fullmatch(run_id):
         raise RuntimeError('Invalid reanchored Note archive run')
-    backup = safe_path(s.LIBRARY.resolve(), f'.trash/source_refresh/{run_id}/{paper['key']}')
+    backup = safe_path(s.LIBRARY.resolve(), f".trash/source_refresh/{run_id}/{paper['key']}")
     if str(backup) != backup_name:
         raise RuntimeError('Invalid reanchored Note archive path')
     manifest_path = safe_path(backup, 'manifest.json')
@@ -125,12 +125,12 @@ def source_record(run_id):
         if not re.fullmatch('[A-Z0-9]{8}', p['key']) or not re.fullmatch('[A-Z0-9]{8}', p.get('primary_key', '')) or p.get('status') != 'applied' or (p.get('exit_code') != 0) or (type(p.get('exit_code')) is not int) or p.get('blocked') or p.get('redo_required') or (p.get('qa', {}).get('ok') is not True) or p['qa'].get('errors') or (not SHA.fullmatch(p.get('source_sha256', ''))):
             raise RuntimeError('Original paper is not a successful QA/exit-zero receipt')
         hashes = p['qa'].get('metrics', {}).get('input_sha256', {})
-        required = {f'{p['citekey']}_Note.md'}
+        required = {f"{p['citekey']}_Note.md"}
         kind = p['qa'].get('metrics', {}).get('fulltext_kind')
         if kind not in ('EN', 'MD'):
             raise RuntimeError('Missing original fulltext kind')
-        required.add(f'{p['citekey']}_{kind}.md')
-        zh_name = f'{p['citekey']}_ZH.md'
+        required.add(f"{p['citekey']}_{kind}.md")
+        zh_name = f"{p['citekey']}_ZH.md"
         if s.paper_translation_required(p):
             required.add(zh_name)
         if not required <= set(hashes) <= required | {zh_name} or not all((isinstance(h, str) and SHA.fullmatch(h) for h in hashes.values())):
@@ -155,7 +155,7 @@ def reviewed_hashes(path, original, original_hashes):
     receipt = read_json(path)
     if set(receipt) != {'schema', 'run_id', 'files'} or type(receipt['schema']) is not int or receipt['schema'] != 1 or (receipt['run_id'] != original['id']) or (not isinstance(receipt['files'], list)) or (not receipt['files']):
         raise ValueError('Invalid reviewed-changes schema/run_id/files')
-    allowed = {f'papers/{p['citekey']}/{p['citekey']}_{suffix}.md' for p in original['papers'] for suffix in ('EN', 'ZH')}
+    allowed = {f"papers/{p['citekey']}/{p['citekey']}_{suffix}.md" for p in original['papers'] for suffix in ('EN', 'ZH')}
     seen = set()
     for entry in receipt['files']:
         if not isinstance(entry, dict) or set(entry) != {'path', 'before_sha256', 'after_sha256'}:
@@ -201,14 +201,14 @@ def prepare(client, run_id, reviewed_changes=None, current_id=None):
     for p in original['papers']:
         folder = safe_path(s.LIBRARY, 'papers/' + p['citekey'])
         for suffix in ('EN', 'MD', 'ZH', 'Note'):
-            doc = safe_path(s.LIBRARY, f'papers/{p['citekey']}/{p['citekey']}_{suffix}.md')
+            doc = safe_path(s.LIBRARY, f"papers/{p['citekey']}/{p['citekey']}_{suffix}.md")
             owned.append(doc)
             original_hashes[str(doc)] = p['qa']['metrics']['input_sha256'].get(doc.name)
         if legacy:
             summaries = [json.loads(line.split('SUMMARY ', 1)[1].split(' pending_', 1)[0]) for line in p.get('qc_log', []) if line.startswith('SUMMARY ')]
             if len(summaries) != 1 or any((summaries[0].get(k) != 1 for k in ('md', 'qc', 'zh', 'note'))):
                 raise RuntimeError('Legacy receipt does not prove new EN/QC/ZH/Note creation')
-            note = folder / f'{p['citekey']}_Note.md'
+            note = folder / f"{p['citekey']}_Note.md"
             if not s.pristine_note(note, source_map[p['key']]):
                 raise RuntimeError('Legacy Note is not pristine; ownership cannot be proved')
         family = client.parent_children(p['key'])
@@ -253,7 +253,7 @@ def prepare(client, run_id, reviewed_changes=None, current_id=None):
         frozen.update(s.validate_completed_paper(p))
         if p['qa']['ok'] is not True:
             raise RuntimeError('Resume deterministic QA failed')
-        note = str(s.LIBRARY / 'papers' / p['citekey'] / f'{p['citekey']}_Note.md')
+        note = str(s.LIBRARY / 'papers' / p['citekey'] / f"{p['citekey']}_Note.md")
         if note in before and expected_note != frozen[note]:
             raise RuntimeError('Existing Note changed; refusing recovery')
     if not legacy and set(frozen) != set(original['qa_frozen']):
@@ -299,7 +299,7 @@ def resume_finalize(client, run_id, *, apply=False, reviewed_changes=None, attem
         s.assert_unstaged()
         s.assert_idle()
         assert_workflow_available()
-        print(f'仅预览恢复收尾 {run_id}：{len(prepared['papers'])} 篇已通过复验；将只重建索引、选择性提交并保存报告（不发送桌面通知）。未写入状态、报告或台账。')
+        print(f"仅预览恢复收尾 {run_id}：{len(prepared['papers'])} 篇已通过复验；将只重建索引、选择性提交并保存报告（不发送桌面通知）。未写入状态、报告或台账。")
         return 0
     attempt = attempt_id or dt.datetime.now().strftime('%Y%m%d_%H%M%S_') + uuid.uuid4().hex[:6]
     if not RUN_ID.fullmatch(attempt):

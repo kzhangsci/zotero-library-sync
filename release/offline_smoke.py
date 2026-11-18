@@ -47,7 +47,19 @@ def smoke():
     assert mineru_credentials.DEFAULT_PATH == paths.SECRETS / "mineru_api.dpapi"
     assert glm_concurrency.ROOT.is_relative_to(paths.DATA)
     assert not citekey_reformat_prep.PINS and not attachments_normalize_prep.EXPLICIT_RENAMES
-    assert intake_new.acronym_table() == {}
+    # beta.15: the distribution ships a PUBLIC base acronym table next to the
+    # code (release/journal_acronyms.base.csv) with curated filename/citekey
+    # short codes for common oceanography/geoscience journals — explicitly NOT
+    # ISO 4 abbreviations. A fresh install's user override table starts
+    # header-only, so the effective table equals the base table; the synthetic
+    # example row must never leak into it.
+    assert intake_new.BASE_TABLE.is_file(), "base acronym table missing from install"
+    effective = intake_new.acronym_table()
+    assert effective.get("geoscientific model development") == "GMD"
+    assert effective.get("journal of physical oceanography") == "JPO"
+    assert effective.get("journal of geophysical research: oceans") == "JGR"
+    assert effective.get("scientific data") == "SciData"
+    assert "synthetic journal of example studies" not in effective, "example row leaked into effective table"
     ledger = library_discovery.load(library_sync.RUNS)
     assert ledger["since"].startswith(paths.BASELINE_DATE) and ledger["entries"] == {}
     class SyntheticClient:

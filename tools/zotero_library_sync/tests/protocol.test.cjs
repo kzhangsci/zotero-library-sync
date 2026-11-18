@@ -192,8 +192,11 @@ test("initial null config becomes defaults without blocking status", async () =>
   const f = fixture(); f.publicConfig = { configured: false, config: null, credentials: { glm: false, deepseek: false } };
   const value = await f.client.getConfig(); assert.equal(value.configured, false);
   assert.equal(value.config.qc.timeout, 1500); assert.equal(value.config.zh.max_tokens, 131072);
-  assert.equal(value.config.qc.reasoning_effort, "max"); assert.equal(value.config.qc.model, "");
+  // Fresh templates carry the user preference (2026-11-17): thinking ON + effort
+  // high — deliberately distinct from GLM-5.3's official default max.
+  assert.equal(value.config.qc.reasoning_effort, "high"); assert.equal(value.config.qc.model, "");
   assert.equal(value.config.qc.thinking, "enabled");
+  assert.equal(value.config.qc.base_url, "https://open.bigmodel.cn/api/coding/paas/v4");
   assert.equal((await f.client.getStatus()).active, false);
 });
 test("profile bounds match backend and providers remain independent", () => {
@@ -388,4 +391,54 @@ test("public test metrics preserve model and token counts but discard untrusted 
   assert.deepEqual(invalid.usage, {});
   const f = fixture(); f.client.sensitive.add("known-secret-canary");
   assert.ok(!f.client.redact(JSON.stringify(Bridge.testResult({ model: "known-secret-canary" }))).includes("known-secret-canary"));
+});
+
+test("beta.15 routes: diagnosis GET/POST, remedy, recovery, resume preview, acronyms", async () => {
+  const f = fixture();
+  const seen = [];
+  f.override = r => {
+    const path = new URL(r.url).pathname;
+    seen.push(`${r.method} ${path}`);
+    if (path === "/v1/status") return { status: 200, data: { capabilities: [], active: false, view: null, text: "t" } };
+    if (path === "/v1/diagnosis/" + RUN + "/ABCDEFG2") return { status: 200, data: {
+      run_id: RUN, key: "ABCDEFG2", citekey: "X", accepted: false, exit_code: 1,
+      classification: [], qa: null, artifacts: { files: [], qc_marked: false }, log_tail: "",
+      latest_attempt: {}, paths: { report: "r" }, ledger: null, remedies: [] } };
+    if (path === "/v1/diagnosis") return { status: 200, data: { run_id: RUN, key: "ABCDEFG2" } };
+    if (path === "/v1/remedy") return { status: 200, data: { operation: OP } };
+    if (path === "/v1/resume/preview") return { status: 200, data: { operation: OP } };
+    if (path === "/v1/recovery") return { status: 200, data: { run_id: RUN + "_rec", started: true } };
+    if (path === "/v1/acronyms") { const body = JSON.parse(r.body);
+      return { status: 200, data: { title: body.title, proposed: body.proposed, changed: true, message: "m" } }; }
+    return undefined;
+  };
+  await f.client.connect(false);
+  const diagnosis = await f.client.diagnosis(RUN, "ABCDEFG2");
+  assert.equal(diagnosis.key, "ABCDEFG2");
+  await f.client.operation(await f.client.remedySubmit(RUN, "ABCDEFG2", "repair_zh"));
+  await f.client.operation(await f.client.remedySubmit(RUN, "ABCDEFG2", "repair_zh",
+    { confirm: true, params: {}, token: "synthetic-token" }));
+  await f.client.operation(await f.client.resumePreview(RUN, true));
+  const recovery = await f.client.recover(RUN, true);
+  assert.equal(recovery.started, true);
+  const acronym = await f.client.saveAcronym("Some Journal", "SJ");
+  assert.equal(acronym.proposed, "SJ");
+  assert.ok(seen.includes(`GET /v1/diagnosis/${RUN}/ABCDEFG2`));
+  assert.ok(seen.includes("POST /v1/remedy"));
+  assert.ok(seen.includes("POST /v1/resume/preview"));
+  assert.ok(seen.includes("POST /v1/recovery"));
+  assert.ok(seen.includes("POST /v1/acronyms"));
+});
+
+test("beta.15 validation: traversal keys, unknown routes, token requirements", async () => {
+  const f = fixture();
+  await assert.rejects(f.client.diagnosis("../bad", "ABCDEFG2"), /诊断需要有效/);
+  await assert.rejects(f.client.diagnosis(RUN, "traversal"), /诊断需要有效/);
+  assert.throws(() => f.client.remedySubmit(RUN, "ABCDEFG2", "Bad Action"), /处置请求参数无效/);
+  assert.throws(() => f.client.remedySubmit(RUN, "ABCDEFG2", "repair_zh", { confirm: true, params: {} }), /一次性令牌/);
+  assert.throws(() => f.client.remedySubmit(RUN, "ABCDEFG2", "repair_zh", { preview: true, params: { x: 1 } }), /预览不携带/);
+  await assert.rejects(f.client.saveAcronym("=cmd()", "OK"), /刊名无效/);
+  await assert.rejects(f.client.saveAcronym("Fine Journal", "has space"), /缩写/);
+  await assert.rejects(f.client.resumePreview("../bad"), /恢复预览选项无效/);
+  await assert.rejects(f.client.recover(RUN, "yes"), /遗留恢复选项无效/);
 });

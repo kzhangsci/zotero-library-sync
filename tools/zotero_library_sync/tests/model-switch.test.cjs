@@ -147,7 +147,12 @@ test("QC and ZH share one cached catalog; manual refresh forces a new request", 
   assert.equal(u.f.posts("/v1/models").length, 1);
   assert.deepEqual(u.controller.modelOptions.qc.models, ["glm-5.3"]);
   // Same provider+endpoint for the other role: cache hit, no second request.
-  u.el("zh-provider").value = "glm"; await u.el("zh-provider").emit("change");
+  // Fresh glm drafts default to the Coding Plan, so align the endpoint with
+  // QC's hydrated general endpoint before the switch event fires.
+  u.el("zh-provider").value = "glm";
+  u.el("zh-base-url").value = u.el("qc-base-url").value;
+  u.el("zh-models-url").value = "";
+  await u.el("zh-provider").emit("change");
   await u.controller.catalogAction("zh", false);
   assert.equal(u.f.posts("/v1/models").length, 1);
   assert.ok(u.controller.modelOptions.zh);
@@ -357,7 +362,11 @@ test("polling a slow catalog operation keeps a newer pending record intact", asy
   await ticking;
   // The superseded poll neither applied the stale listing nor deleted the record.
   assert.equal(u.controller.catalogPending.qc.id, newOp);
-  assert.equal(u.controller.modelOptions.qc, null);
+  // The bundled offline seed shown at open survives untouched: the superseded
+  // poll's stale-model list must never be applied over it.
+  assert.ok(u.controller.modelOptions.qc);
+  assert.equal(u.controller.modelOptions.qc.seeded, true);
+  assert.ok(!u.controller.modelOptions.qc.models.includes("stale-model"));
   assert.equal(u.el("qc-model").value, "glm-test-model");
 });
 

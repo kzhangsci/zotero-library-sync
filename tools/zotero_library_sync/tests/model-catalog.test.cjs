@@ -36,7 +36,7 @@ function blank() {
 test("parameter help distinguishes live API capabilities from official snapshots", () => {
   for (const source of ["official_docs", "official_cache", "bundled_catalog", "provider_api"]) {
     const provider = source === "provider_api" ? "deepseek" : "glm";
-    const profile = { ...Bridge.profileDefaults(provider), model: provider === "glm" ? "glm-5.3" : "deepseek-flash" };
+    const profile = { ...Bridge.hydrationDefaults(provider), model: provider === "glm" ? "glm-5.3" : "deepseek-flash" };
     const choices = { ...Bridge.modelChoices(catalog(provider, source), provider), endpoint: Bridge.endpointSignature(profile) };
     const help = Bridge.modelParameterHelp(profile, choices);
     for (const field of ["effort", "tokens"]) {
@@ -82,18 +82,42 @@ test("malformed or failed model lists cannot masquerade as successful current me
   }
 });
 
-test("new blank templates explicitly use highest values without changing legacy defaults or the meaning of default", async t => {
-  for (const [provider, cap] of [["glm", 131072], ["deepseek", 393216]]) {
+test("new blank templates default to thinking on + effort high without changing legacy defaults or the meaning of default", async t => {
+  for (const [provider, cap] of [["glm", 131072], ["deepseek", 393216], ["tongji", 32768]]) {
     const p = Bridge.profileDefaults(provider);
-    assert.equal(p.model, ""); assert.equal(p.max_tokens, cap); assert.equal(p.reasoning_effort, "max"); assert.equal(p.thinking, "enabled");
+    assert.equal(p.model, ""); assert.equal(p.max_tokens, cap); assert.equal(p.reasoning_effort, "high");
+    assert.equal(p.thinking, provider === "tongji" ? "default" : "enabled");
     assert.equal(Bridge.profile({ ...p, model: "known", reasoning_effort: "default", thinking: "default" }).reasoning_effort, "default");
   }
+  // Fresh glm drafts explicitly name the Coding Plan endpoint; the model stays
+  // an explicit user choice and saved profiles never migrate.
+  assert.equal(Bridge.profileDefaults("glm").base_url, CODING);
+  assert.equal(Bridge.profileDefaults("zcode").reasoning_effort, "high");
   assert.deepEqual(Bridge.defaults().qc, { provider: "glm", model: "", reasoning_effort: "default", timeout: 1500, max_tokens: 32768 });
   const u = blank(); t.after(() => u.controller.close()); await u.controller.init();
   for (const phase of ["qc", "zh"]) {
     assert.equal(Number(u.el(phase + "-max-tokens").value), 131072);
-    assert.equal(u.el(phase + "-effort").value, "max"); assert.equal(u.el(phase + "-thinking").value, "enabled");
+    assert.equal(u.el(phase + "-effort").value, "high"); assert.equal(u.el(phase + "-thinking").value, "enabled");
+    assert.equal(u.el(phase + "-base-url").value, CODING); assert.equal(u.el(phase + "-model").value, "");
   }
+  // Explicit "restore defaults" returns the user-preferred high, not the old max.
+  u.el("qc-effort").value = "low"; u.el("qc-thinking").value = "disabled";
+  await u.el("qc-defaults").emit("click");
+  assert.equal(u.el("qc-effort").value, "high"); assert.equal(u.el("qc-thinking").value, "enabled");
+  assert.match(u.el("qc-provider-notice").textContent, /用户偏好默认.*effort=high/);
+  // Provider switches migrate only untouched defaults; manual values survive.
+  u.el("qc-effort").value = "high";
+  const pickProvider = async label => {
+    await u.el("qc-provider-toggle").emit("click");
+    const row = u.el("qc-provider-options").children.find(row => row.textContent === label);
+    assert.ok(row, label); await row.emit("click");
+  };
+  await pickProvider("DeepSeek");
+  assert.equal(u.el("qc-effort").value, "high"); assert.equal(u.el("qc-thinking").value, "enabled");
+  assert.equal(u.el("qc-base-url").value, "https://api.deepseek.com");
+  await pickProvider("同济校内 API（独立 Key）");
+  assert.equal(u.el("qc-effort").value, "high");   // Tongji's thinking-on is the effort itself
+  assert.equal(u.el("qc-thinking").value, "default");
   assert.equal(u.f.posts("/v1/models").length, 0); assert.equal(u.f.posts("/v1/test").length, 0);
   assert.equal(u.f.posts("/v1/config").length, 0); assert.equal(u.f.posts("/v1/start").length, 0);
 });
@@ -130,7 +154,8 @@ test("display and version labels search and select as labels but only API IDs en
   assert.deepEqual(u.el("zh-model-options").children.map(row => row.textContent), [label]);
   await u.el("zh-model-options").children[0].emit("click");
   assert.equal(u.el("zh-model").value, "deepseek-flash"); assert.equal(Number(u.el("zh-max-tokens").value), 393216);
-  assert.equal(u.el("zh-effort").value, "max"); assert.equal(u.el("zh-thinking").value, "enabled");
+  assert.equal(u.el("zh-effort").value, "high"); assert.equal(u.el("zh-thinking").value, "enabled");
+  assert.match(u.el("zh-maximum-notice").textContent, /推荐默认参数/);
   assert.match(u.el("zh-maximum-notice").textContent, /尚未保存/);
   assert.deepEqual(u.controller.readModel("qc"), other); assert.deepEqual(u.controller.savedConfig, saved);
   assert.equal(u.f.posts("/v1/config").length, 0); assert.equal(u.f.posts("/v1/test").length, 0);
@@ -140,7 +165,7 @@ test("display and version labels search and select as labels but only API IDs en
   assert.doesNotMatch(body.model, /DeepSeek-V4|1017|API ID/);
 });
 
-test("manual input only updates help; an explicit change fills exact known-model maxima in one role", async t => {
+test("manual input only updates help; an explicit change fills recommended defaults (thinking on, effort high) in one role", async t => {
   const u = ui(); t.after(() => u.controller.close()); await u.controller.init();
   const other = u.controller.readModel("zh"), saved = structuredClone(u.controller.savedConfig), requests = u.f.requests.length;
   u.el("qc-max-tokens").value = "100000"; u.el("qc-effort").value = "low"; u.el("qc-thinking").value = "disabled";
@@ -149,11 +174,42 @@ test("manual input only updates help; an explicit change fills exact known-model
     assert.equal(Number(u.el("qc-max-tokens").value), 100000); assert.equal(u.el("qc-effort").value, "low");
   }
   await u.el("qc-model").emit("change");
-  assert.equal(Number(u.el("qc-max-tokens").value), 131072); assert.equal(u.el("qc-effort").value, "max");
+  assert.equal(Number(u.el("qc-max-tokens").value), 131072); assert.equal(u.el("qc-effort").value, "high");
   assert.equal(u.el("qc-thinking").value, "enabled");
+  assert.match(u.el("qc-effort-notice").textContent, /推荐默认（用户偏好，新模板即此值）/);
   assert.match(u.el("message").textContent, /QC.*草稿尚未保存/);
   assert.deepEqual(u.controller.savedConfig, saved); assert.deepEqual(u.controller.readModel("zh"), other);
   assert.equal(u.f.requests.length, requests);
+});
+
+test("model selection fills recommended defaults with a documented fallback when high is unsupported", async t => {
+  const u = ui(); t.after(() => u.controller.close()); await u.controller.init();
+  // Provider metadata without "high": the recommendation falls back to the
+  // closest documented thinking-capable level, says so, and hides nothing.
+  u.f.operationResult = { provider: "glm", models: ["glm-test-model"], source: "provider_api", notice: "candidates",
+    details: { "glm-test-model": { effort_levels: ["low", "medium"], highest_effort: "medium", max_output_tokens: 4096 } } };
+  await u.controller.modelAction("qc", "models"); await u.controller.tick();
+  await pick(u, "qc", "glm-test-model");
+  assert.equal(u.el("qc-effort").value, "medium"); assert.equal(u.el("qc-thinking").value, "enabled");
+  assert.equal(Number(u.el("qc-max-tokens").value), 4096);
+  assert.match(u.el("qc-effort-notice").textContent, /已按文档支持档位回退/);
+  assert.match(u.el("qc-maximum-notice").textContent, /回退到文档支持的 medium/);
+  assert.deepEqual(u.el("qc-effort-options").children.map(x => x.textContent), ["default", "low", "medium"]);
+  assert.equal(u.el("qc-maximum").disabled, false);   // the explicit maximum stays available
+  // A documented set with no thinking-capable level fills nothing and explains.
+  u.f.operationResult = { provider: "glm", models: ["glm-minimal"], source: "provider_api", notice: "candidates",
+    details: { "glm-minimal": { effort_levels: ["none"] } } };
+  await u.controller.modelAction("qc", "models"); await u.controller.tick();
+  u.el("qc-effort").value = "low";
+  await pick(u, "qc", "glm-minimal");
+  assert.equal(u.el("qc-effort").value, "low");
+  assert.match(u.el("message").textContent, /未自动填写 thinking \/ effort/);
+  // The zcode login has no callable route; it recommends nothing at all.
+  assert.equal(Bridge.modelRecommended({ provider: "zcode", model: "glm-5.3" }), null);
+  assert.equal(Bridge.recommendedEffort(["low", "high", "max"]), "high");
+  assert.equal(Bridge.recommendedEffort(["low", "medium"]), "medium");
+  assert.equal(Bridge.recommendedEffort(["none"]), null);
+  assert.equal(Bridge.recommendedEffort(["low", "future-effort"]), null);
 });
 
 test("maximum button preserves model, endpoints, timeout, JSON and other role while editing only draft parameters", async t => {
@@ -258,20 +314,26 @@ test("source labels always show origin and fetched time; cache and bundled data 
 test("official GLM docs fetch without a saved key; paid tests and custom listing still require saved keys", async t => {
   const u = blank(); t.after(() => u.controller.close()); await u.controller.init();
   assert.equal(u.el("qc-models").disabled, false); assert.equal(u.el("qc-test").disabled, true);
-  await fetchList(u, "qc", catalog()); assert.equal(u.f.posts("/v1/models").length, 1);
+  // The QC docs fetch needs no saved key. The settling tick also fires the
+  // asynchronous initial refresh of BOTH bundled GLM doc seeds (qc and zh by
+  // design since beta.14), so assert the request roles, not a total count.
+  await fetchList(u, "qc", catalog());
+  const listings = u.f.posts("/v1/models");
+  assert.ok(listings.length >= 1);
+  for (const request of listings) assert.equal(JSON.parse(request.body).provider, "glm");
   assert.equal(u.window.confirms.length, 0);
   u.el("qc-model").value = "glm-5.3"; await u.el("qc-model").emit("change");
   await u.controller.modelAction("qc", "test"); assert.equal(u.f.posts("/v1/test").length, 0);
   assert.match(u.el("message").textContent, /保存.*密钥/);
+  const settled = u.f.posts("/v1/models").length;
   u.el("qc-models-url").value = "https://catalog.example/models"; await u.el("qc-models-url").emit("input");
   assert.equal(u.el("qc-models").disabled, true);
-  await u.controller.modelAction("qc", "models"); assert.equal(u.f.posts("/v1/models").length, 1);
+  await u.controller.modelAction("qc", "models"); assert.equal(u.f.posts("/v1/models").length, settled);
   assert.equal(u.f.posts("/v1/config").length, 0);
 });
 
-test("unconfirmed Coding Plan docs are credential-free, exclude FlashX, and do not bypass later save/test confirmation", async t => {
+test("Coding Plan docs are credential-free, exclude FlashX, and the trusted coding endpoint needs no extra confirmation", async t => {
   const u = blank(); t.after(() => u.controller.close()); await u.controller.init();
-  u.el("qc-base-url").value = CODING; await u.el("qc-base-url").emit("input");
   assert.equal(u.controller.endpointConfirmed.qc, false); assert.equal(u.el("qc-models").disabled, false);
   const value = { ...catalog(), endpoint_kind: "coding_plan", reference: "https://docs.bigmodel.cn/cn/coding-plan/overview.md" };
   await fetchList(u, "qc", value);
@@ -281,11 +343,16 @@ test("unconfirmed Coding Plan docs are credential-free, exclude FlashX, and do n
   await pick(u, "qc", "glm-5.3-flash · API ID: glm-5.3-flash");
   assert.equal(Number(u.el("qc-max-tokens").value), 131072);
   assert.match(u.el("qc-endpoint-notice").textContent, /Coding Plan.*不含 FlashX.*不证明底层模型相同/);
-  u.controller.credentials.glm = true; u.controller.update();
-  u.window.confirmResult = false; await u.controller.modelAction("qc", "test");
-  assert.equal(u.f.posts("/v1/test").length, 0); assert.equal(u.window.confirms.length, 1);
+  u.f.publicConfig.credentials.glm = true;
+  u.controller.credentials.glm = true;
+  u.el("glm-key").value = u.controller.loadedKeys.glm = "synthetic-coding-plan-key";
+  u.controller.update();
+  // The official coding endpoint is a trusted default: no custom-address
+  // confirmation dialog gates the paid test or the save.
+  u.window.confirmResult = false; await u.controller.modelAction("qc", "test"); await u.controller.tick();
+  assert.equal(u.f.posts("/v1/test").length, 1); assert.equal(u.window.confirms.length, 0);
   u.el("zh-model").value = "glm-5.3"; await u.el("zh-model").emit("input");
-  await u.controller.saveConfig(); assert.equal(u.f.posts("/v1/config").length, 0); assert.equal(u.window.confirms.length, 2);
+  await u.controller.saveConfig(); assert.equal(u.f.posts("/v1/config").length, 1, u.el("message").textContent); assert.equal(u.window.confirms.length, 0);
   assert.equal(u.controller.endpointConfirmed.qc, false);
 });
 
@@ -299,16 +366,82 @@ test("Coding Plan cannot receive a standard endpoint catalog or standard static 
   assert.equal(u.el("qc-model").value, "glm-5.3-flashx");
 });
 
-test("endpoint/provider edits invalidate model options, provenance and highest metadata without rewriting parameters", async t => {
+test("endpoint/provider edits invalidate stale options; recognized endpoints reseed the bundled snapshot", async t => {
   const u = ui(); t.after(() => u.controller.close()); await u.controller.init();
-  for (const [field, replacement] of [["base-url", "https://other.example/v1"], ["models-url", "https://other.example/models"],
-    ["protocol", "other"], ["provider", "deepseek"]]) {
+  // Custom edits must leave NO options (no official seeds for custom URLs);
+  // switching to an official provider immediately reseeds the bundled
+  // snapshot with an honest offline label while an async refresh may follow.
+  const expectations = [["base-url", "https://other.example/v1", null],
+    ["models-url", "https://other.example/models", null],
+    ["protocol", "other", null],
+    ["provider", "deepseek", "bundled"]];
+  for (const [field, replacement, expected] of expectations) {
     await u.controller.reloadConfig(); await fetchList(u, "qc", catalog());
     const max = u.el("qc-max-tokens").value, effort = u.el("qc-effort").value;
     u.el("qc-" + field).value = replacement; await u.el("qc-" + field).emit("input");
-    assert.equal(u.controller.modelOptions.qc, null); assert.equal(u.el("qc-model-options").children.length, 0);
+    if (expected === null) {
+      assert.equal(u.controller.modelOptions.qc, null); assert.equal(u.el("qc-model-options").children.length, 0);
+    } else {
+      assert.ok(u.controller.modelOptions.qc); assert.equal(u.controller.modelOptions.qc.source, "bundled_catalog");
+      assert.equal(u.controller.modelOptions.qc.seeded, true);
+      assert.equal(u.el("qc-model-options").children.length, 2);   // deepseek-flash, deepseek-v4-pro
+      assert.match(u.el("qc-model-notice").textContent, /内置官方文档候选（离线快照，不是账号可用清单）/);
+    }
     assert.match(u.el("model-result").textContent, /先前.*已作废/);
     assert.equal(u.el("qc-max-tokens").value, max); assert.equal(u.el("qc-effort").value, effort);
+  }
+});
+
+test("bundled candidates appear immediately on open, then auto-refresh asynchronously and survive refresh failures", async t => {
+  // A fully offline first open still shows explicit candidates for the
+  // recognized default endpoint; nothing is requested during the synchronous
+  // open itself. The seed is not a fetch result, so the next poll refreshes
+  // the credential-free GLM doc endpoints automatically (beta.14 task
+  // requirement) — the manual button is not the only way to a live listing.
+  const u = blank(); t.after(() => u.controller.close()); await u.controller.init();
+  assert.ok(u.controller.modelOptions.qc); assert.equal(u.controller.modelOptions.qc.source, "bundled_catalog");
+  assert.equal(u.controller.modelOptions.qc.endpoint_kind, "coding_plan");   // fresh glm drafts default to Coding Plan
+  assert.deepEqual(u.controller.modelOptions.qc.models, ["glm-5.3", "glm-5.3-flash"]);
+  assert.equal(u.f.posts("/v1/models").length, 0); assert.equal(u.f.posts("/v1/config").length, 0);
+  assert.equal(u.el("qc-model-options").children.length, 2);
+  assert.match(u.el("qc-model-notice").textContent, /内置官方文档候选（离线快照，不是账号可用清单）/);
+  // The async refresh fires on the poll for BOTH glm roles, keeps the seed
+  // visible until its answer lands, and merges into one request per identity.
+  await u.controller.tick();
+  const auto = u.f.posts("/v1/models");
+  assert.equal(auto.length, 2);              // qc and zh both seed the glm Coding Plan endpoint
+  for (const request of auto) {
+    const body = JSON.parse(request.body);
+    assert.equal(body.provider, "glm"); assert.equal(body.refresh, undefined);  // legacy body: bridge refreshes live
+  }
+  assert.ok(u.controller.modelOptions.qc.seeded);
+  // A failed refresh keeps the bundled candidates, the hand-typed model and
+  // any preview; the failure is named, never presented as success.
+  await u.controller.tick();                 // settle the auto operations (mock result invalid → kept)
+  const model = "glm-5.3"; u.el("qc-model").value = model; await u.el("qc-model").emit("input");
+  u.f.online = false;
+  await u.controller.modelAction("qc", "models");
+  assert.equal(u.el("qc-model").value, model);
+  assert.ok(u.controller.modelOptions.qc); assert.equal(u.controller.modelOptions.qc.seeded, true);
+  assert.match(u.el("qc-model-notice").textContent, /失败|无效|保留/);
+  assert.equal(u.f.posts("/v1/models").length, 3);   // 2 auto refreshes + 1 failed manual retry
+});
+
+test("custom endpoints never receive bundled official candidates", async t => {
+  const u = blank(); t.after(() => u.controller.close()); await u.controller.init();
+  u.el("qc-base-url").value = "https://proxy.example/v1"; await u.el("qc-base-url").emit("input");
+  assert.equal(u.controller.modelOptions.qc, null); assert.equal(u.el("qc-model-options").children.length, 0);
+  assert.doesNotMatch(u.el("qc-model-notice").textContent, /内置官方文档候选/);
+  assert.equal(Bridge.bundledCatalog({ ...Bridge.profileDefaults("glm"), base_url: "https://proxy.example/v1" }), null);
+  assert.equal(Bridge.bundledCatalog({ provider: "zcode", plan: "coding", model: "glm-5.3", reasoning_effort: "max" }), null);
+  for (const [provider, kind] of [["glm", "standard"], ["glm", "coding_plan"], ["deepseek", "deepseek"], ["tongji", "tongji"]]) {
+    const context = provider === "glm" && kind === "coding_plan" ? Bridge.profileDefaults("glm")
+      : { ...Bridge.profileDefaults(provider) };
+    const seed = Bridge.bundledCatalog(context);
+    assert.ok(seed, provider + "/" + kind);
+    assert.equal(seed.source, "bundled_catalog");
+    const validated = Bridge.modelChoices(seed, provider);   // the seed passes the public catalog contract
+    assert.deepEqual(validated.models, seed.models);
   }
 });
 
@@ -347,13 +480,47 @@ test("closing during a model-list submission discards late results without anoth
   assert.equal(u.f.posts("/v1/test").length, 0); assert.equal(u.f.posts("/v1/config").length, 0);
 });
 
-test("beta.9 markup exposes one maximum button per role and refreshes only its own chrome resource URLs", () => {
+test("markup version references are generated from manifest.json, never hand-copied", () => {
+  const manifest = JSON.parse(fs.readFileSync(path.join(ROOT, "manifest.json"), "utf8"));
   const markup = fs.readFileSync(path.join(ROOT, "panel.xhtml"), "utf8");
-  assert.match(markup, /v0\.2\.0-beta\.9/); assert.doesNotMatch(markup, /0\.2\.0-beta\.[345678]/);
   const resources = [...markup.matchAll(/chrome:\/\/library-sync\/content\/[^" ]+/g)].map(match => match[0]);
-  assert.equal(resources.length, 4); assert.ok(resources.every(url => url.endsWith("?v=0.2.0-beta.9")));
+  assert.equal(resources.length, 4); assert.ok(resources.every(url => url.endsWith("?v=" + manifest.version)));
+  assert.match(markup, new RegExp('id="panel-version"[^>]*>v' + manifest.version.replace(/[.]/g, "\\.")));
+  assert.ok(markup.includes('id="panel-boot"'));   // static boot guidance survives a total script failure
+  assert.ok(fs.readFileSync(path.join(ROOT, "runtime.js"), "utf8").includes("panel.xhtml?v=" + manifest.version));
+  assert.ok(fs.readFileSync(path.join(ROOT, "bridge-client.js"), "utf8").includes('VERSION = "' + manifest.version + '"'));
   for (const phase of ["qc", "zh"]) {
     assert.equal([...markup.matchAll(new RegExp(`id="${phase}-maximum"`, "g"))].length, 1);
     assert.ok(markup.includes(`id="${phase}-maximum-notice"`));
+    assert.ok(markup.includes(`id="${phase}-plan"`));          // explicit ZCode subscription picker
   }
+});
+
+test("fresh glm drafts use the Coding Plan while saved generic glm hydrates the historical general endpoint", () => {
+  const fresh = Bridge.profileDefaults("glm"), saved = Bridge.hydrationDefaults("glm");
+  assert.equal(fresh.base_url, CODING); assert.equal(fresh.model, "");
+  assert.equal(saved.base_url, "https://open.bigmodel.cn/api/paas/v4"); assert.equal(saved.model, "");
+  assert.equal(Bridge.endpointKind(fresh), "glm_coding_plan"); assert.equal(Bridge.endpointKind(saved), "glm_standard");
+  assert.equal(Bridge.publicModelDocs(fresh), true); assert.equal(Bridge.publicModelDocs(saved), true);
+  // The old general route remains a first-class official profile, not custom.
+  assert.equal(Bridge.profile({ ...saved, model: "glm-5.3" }).base_url, "https://open.bigmodel.cn/api/paas/v4");
+  for (const provider of ["deepseek", "tongji"]) assert.deepEqual(Bridge.hydrationDefaults(provider), Bridge.profileDefaults(provider));
+});
+
+test("saved profiles hydrate their own endpoints: legacy glm stays general, explicit school endpoints survive", async t => {
+  const f = fixture();
+  f.keys.tongji = "synthetic-school-secret-only";
+  f.publicConfig = { configured: true, credentials: { glm: true, deepseek: false, tongji: true },
+    config: { schema: 1,
+      qc: { provider: "glm", model: "glm-5.3", reasoning_effort: "default", timeout: 123, max_tokens: 32768 },
+      zh: { ...Bridge.profileDefaults("tongji"), model: "DeepSeek-V4.1-Flash" } } };
+  const u = ui(f); t.after(() => u.controller.close()); await u.controller.init();
+  assert.equal(u.el("qc-base-url").value, "https://open.bigmodel.cn/api/paas/v4");
+  assert.equal(u.controller.readModel("qc").base_url, "https://open.bigmodel.cn/api/paas/v4");
+  assert.equal(u.el("zh-base-url").value, "https://agi.tongji.edu.cn/v1");
+  assert.deepEqual(u.controller.readModel("zh"), { ...Bridge.profileDefaults("tongji"), model: "DeepSeek-V4.1-Flash" });
+  await u.controller.reloadConfig();
+  assert.equal(u.el("qc-base-url").value, "https://open.bigmodel.cn/api/paas/v4");
+  // Rendering and reloading never rewrite saved models or keys.
+  assert.equal(u.f.posts("/v1/config").length, 0);
 });

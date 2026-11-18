@@ -23,19 +23,51 @@ class ProfileTests(OfflineCase):
                 patch.object(socket, "getaddrinfo", side_effect=AssertionError("no DNS")):
             templates = api.profile_defaults()
             for provider, default in templates.items():
+                if provider == api.ZCODE_PROVIDER:
+                    # The local-login template has no endpoint fields at all;
+                    # its subscription defaults to the coding route explicitly.
+                    self.assertEqual(default, {"provider": provider, "plan": "coding", "model": "",
+                                               "reasoning_effort": "high", "timeout": 1500, "max_tokens": 128000})
+                    self.assertEqual(api.validate_profile(default, for_models=True), default)
+                    with self.assertRaisesRegex(api.ConfigError, "invalid_model_id"):
+                        api.validate_profile(default)
+                    continue
+                base_url = api.GLM_CODING_BASE_URL if provider == "glm" else api.BASE_URLS[provider]
+                models_url = "" if provider == "glm" else api.MODEL_ENDPOINTS.get(provider, "")
                 self.assertEqual(default, {
-                    "provider": provider, "model": "", "reasoning_effort": "default" if provider == "tongji" else "max",
+                    "provider": provider, "model": "",
+                    # User preference: every supported provider defaults to
+                    # thinking ON + effort high; Tongji expresses thinking via
+                    # reasoning_effort only, so its thinking stays "default".
+                    "reasoning_effort": "high",
                     "timeout": 1500, "max_tokens": {"glm": 131072, "deepseek": 393216, "tongji": 32768}[provider],
-                    "base_url": api.BASE_URLS[provider],
-                    "protocol": "openai_chat_completions", "models_url": api.MODEL_ENDPOINTS.get(provider, ""),
+                    "base_url": base_url,
+                    "protocol": "openai_chat_completions", "models_url": models_url,
                     "thinking": "default" if provider == "tongji" else "enabled", "extra_body": {}, "endpoint_confirmed": False,
                 })
                 self.assertEqual(api.validate_profile(default, for_models=True), default)
                 with self.assertRaisesRegex(api.ConfigError, "invalid_model_id"):
                     api.validate_profile(default)
             api.validate_profile(extended(base_url="https://user-selected.example/v1", endpoint_confirmed=True))
+            # The trusted Coding Plan draft endpoint needs no extra confirmation.
+            api.validate_profile(extended())
         templates["glm"]["extra_body"]["temperature"] = 0.4
         self.assertEqual(api.profile_defaults()["glm"]["extra_body"], {})
+
+    def test_fresh_defaults_prefer_high_and_never_touch_saved_selections(self):
+        # "high" is the USER preference, distinct from official defaults and
+        # maxima: GLM-5.3's official default is max, DeepSeek's is high. Fresh
+        # templates pick high; already-saved values (default/max/custom) are
+        # validated back unchanged and never silently migrated.
+        templates = api.profile_defaults()
+        for provider in (*api.ENDPOINTS, *([api.ZCODE_PROVIDER] if api.ZCODE_PROVIDER in templates else [])):
+            self.assertEqual(templates[provider]["reasoning_effort"], "high")
+        self.assertEqual(templates["glm"]["thinking"], "enabled")
+        self.assertEqual(templates["deepseek"]["thinking"], "enabled")
+        self.assertEqual(templates["tongji"]["thinking"], "default")
+        for effort in ("default", "max", "none", "custom-v1"):
+            self.assertEqual(api.validate_profile(profile("glm", reasoning_effort=effort))["reasoning_effort"], effort)
+            self.assertEqual(api.validate_profile(extended("deepseek", reasoning_effort=effort))["reasoning_effort"], effort)
 
     def test_legacy_normalization_stays_exactly_five_fields(self):
         legacy = api.validate_profile(profile(reasoning_effort="none"))
@@ -48,10 +80,12 @@ class ProfileTests(OfflineCase):
         self.assertNotIn("reasoning_effort", body)
 
     def test_each_extension_activates_complete_v2_defaults(self):
+        # "plan" is the zcode subscription field: API-key providers never carry it.
+        expected = set(api._PROFILE_FIELDS) - {"plan"}
         for field in api._V2_FIELDS:
             candidate = {**profile(), field: api.profile_defaults()["glm"][field]}
             with self.subTest(field=field):
-                self.assertEqual(set(api.validate_profile(candidate)), set(api._PROFILE_FIELDS))
+                self.assertEqual(set(api.validate_profile(candidate)), expected)
 
     def test_model_namespaces_and_custom_effort_are_allowed_not_remapped(self):
         for model in ("org/model:revision", "vendor/model@v2+q4", "A" * 256):
@@ -433,7 +467,10 @@ class ModelDetailsTests(OfflineCase):
                 patch.object(api, "_request", side_effect=AssertionError("no HTTP")), \
                 patch.object(socket, "getaddrinfo", side_effect=AssertionError("no DNS")):
             for blank in ("", "   ", "\t"):
-                result = api.model_choices(profile=extended(model=blank))
+                # The general GLM endpoint keeps its historical bundled catalog;
+                # new drafts default to the Coding Plan endpoint instead.
+                general = extended(model=blank, base_url=api.BASE_URLS["glm"])
+                result = api.model_choices(profile=general)
                 self.assertEqual(result["models"], expected)
                 self.assertEqual(result["source"], "bundled_catalog")
                 self.assertIn("非账户可用清单", result["notice"])

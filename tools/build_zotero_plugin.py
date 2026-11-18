@@ -12,12 +12,19 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import tempfile
 import zipfile
 
 REPO = Path(__file__).resolve().parent.parent
 SOURCE = REPO / "tools" / "zotero_library_sync"
-VERSION = "0.2.0-beta.9"
+# manifest.json is the ONE canonical version source. Every other copy (output
+# name, panel resources/header, dialog URL, diagnostics VERSION, release docs)
+# is generated from or checked against it; a drifted copy fails the build.
+with (SOURCE / "manifest.json").open(encoding="utf-8") as _manifest_stream:
+    VERSION = json.load(_manifest_stream)["version"]
+if not re.fullmatch(r"0\.2\.0-beta\.[0-9]+", VERSION):
+    raise ValueError("Unsupported manifest version shape: " + VERSION)
 OUTPUT = REPO / "release" / "dist" / f"library-sync-{VERSION}.xpi"
 # Reserved, deliberately unresolvable hostname: this private build is updated
 # manually. Never point at an invented public repository or a third-party feed.
@@ -46,6 +53,31 @@ def validate_manifest(manifest: dict) -> None:
         raise ValueError("Manifest does not match the pinned Zotero 10.0 package contract")
 
 
+def enforce_version_consistency(contents: dict) -> None:
+    """Reject a package whose embedded version references drifted from manifest.
+
+    beta.13 shipped panel.xhtml still addressing its subresources with the
+    beta.12 query string: after an upgrade Gecko can serve the OLD cached
+    panel JS under the unchanged URI against the NEW document, which presents
+    as a blank panel. Every ?v= marker must move with the manifest version.
+    """
+    version = VERSION
+    problems = []
+    panel = contents["panel.xhtml"].decode("utf-8")
+    queries = set(re.findall(r"chrome://library-sync/content/[A-Za-z0-9._-]+\?v=([0-9A-Za-z.+-]+)", panel))
+    if len(queries) != 1 or queries != {version}:
+        problems.append(f"panel.xhtml resource ?v= values {sorted(queries)} != {version}")
+    if not re.search(r'id="panel-version"[^>]*>v' + re.escape(version), panel):
+        problems.append("panel.xhtml header version display drift")
+    runtime = contents["runtime.js"].decode("utf-8")
+    if f'panel.xhtml?v={version}"' not in runtime:
+        problems.append("runtime.js dialog URL version drift")
+    if f'VERSION = "{version}"' not in contents["bridge-client.js"].decode("utf-8"):
+        problems.append("bridge-client.js diagnostics VERSION drift")
+    if problems:
+        raise ValueError("Version drift before packaging: " + "; ".join(problems))
+
+
 def build_bytes(source: Path = SOURCE) -> bytes:
     source = Path(source).resolve(strict=True)
     contents = {}
@@ -57,6 +89,7 @@ def build_bytes(source: Path = SOURCE) -> bytes:
         contents[name].decode("utf-8")
     manifest = json.loads(contents["manifest.json"])
     validate_manifest(manifest)
+    enforce_version_consistency(contents)
     buffer = io.BytesIO()
     # ZIP_STORED avoids platform/zlib-version variation; these sources are small.
     with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_STORED) as archive:

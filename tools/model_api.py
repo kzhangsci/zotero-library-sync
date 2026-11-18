@@ -24,8 +24,139 @@ DEFAULT_CONFIG = SECRETS / 'model_api.dpapi'
 ENDPOINTS = MappingProxyType({'glm': 'https://open.bigmodel.cn/api/paas/v4/chat/completions', 'deepseek': 'https://api.deepseek.com/chat/completions', 'tongji': 'https://agi.tongji.edu.cn/v1/chat/completions'})
 MODEL_ENDPOINTS = MappingProxyType({'deepseek': 'https://api.deepseek.com/models', 'tongji': 'https://agi.tongji.edu.cn/v1/models'})
 TONGJI_HOSTS = frozenset({'agi.tongji.edu.cn', 'llmapi.tongji.edu.cn'})
+GLM_CODING_BASE_URL = 'https://open.bigmodel.cn/api/coding/paas/v4'
 TOKEN_LIMITS = MappingProxyType({'glm': 131072, 'deepseek': 393216, 'tongji': 1048576})
 BASE_URLS = MappingProxyType({p: url.removesuffix('/chat/completions') for p, url in ENDPOINTS.items()})
+ZCODE_PROVIDER = 'zcode'
+ZCODE_MODELS = ('glm-5.3', 'glm-5.3-flash')
+ZCODE_PLANS = ('coding', 'start')
+ZCODE_CODING_PROVIDER_ID = 'bigmodel'
+ZCODE_START_PROVIDER_KEY = 'builtin:bigmodel-start-plan'
+ZCODE_EFFORTS = frozenset({'default', 'low', 'high', 'max'})
+ZCODE_LEVELS = frozenset({'low', 'high', 'max'})
+ZCODE_MAX_TOKENS = 128000
+ZCODE_CLI_CODING_ENDPOINT = 'https://open.bigmodel.cn/api/anthropic'
+ZCODE_REASON_CODES = frozenset({'cli_adapter_unavailable', 'cli_executable_unavailable', 'cli_config_unreadable', 'provider_absent', 'provider_config_unsupported', 'provider_models_unreadable', 'login_route_unavailable', 'start_route_not_implemented'})
+
+def zcode_available():
+    import glm_client
+    return 'zcode CLI' in (glm_client.__doc__ or '')
+
+def zcode_executable():
+    import shutil
+    located = shutil.which('zcode.cmd')
+    if located:
+        return located
+    fallback = Path.home() / 'AppData' / 'Roaming' / 'npm' / 'zcode.cmd'
+    return str(fallback) if fallback.is_file() else ''
+
+def zcode_logged_in():
+    if not zcode_available():
+        return False
+    try:
+        path = Path.home() / '.zcode' / 'v2' / 'credentials.json'
+        if not path.is_file() or path.stat().st_size > 65536:
+            return False
+        document = jsonlib.loads(path.read_text(encoding='utf-8'))
+        return isinstance(document, dict) and 'oauth:bigmodel:access_token' in document
+    except (OSError, ValueError, RuntimeError):
+        return False
+
+def _zcode_model_metadata(entry):
+    result = {}
+    if not isinstance(entry, dict):
+        return result
+    reasoning = entry.get('reasoning')
+    if isinstance(reasoning, dict):
+        levels = reasoning.get('levels')
+        if not isinstance(levels, list):
+            levels = reasoning.get('variants')
+        if isinstance(levels, list) and 0 < len(levels) <= MAX_EFFORT_LEVELS and all((type(v) is str and _EFFORT.fullmatch(v) for v in levels)):
+            ordered = list(dict.fromkeys(levels))
+            result['effort_levels'] = ordered
+            default = reasoning.get('defaultLevel')
+            if not (type(default) is str and default in ordered):
+                default = reasoning.get('defaultVariant')
+            if type(default) is str and default in ordered:
+                result['default_effort'] = default
+    limit = entry.get('limit')
+    if isinstance(limit, dict):
+        output = limit.get('output')
+        if type(output) is int and 0 < output <= 2 ** 31 - 1:
+            result['max_output_tokens'] = output
+    return result
+
+def _bounded_json_read(path, limit=262144):
+    path = Path(path)
+    if not path.is_file() or path.stat().st_size > limit:
+        raise ValueError('bounded read rejected')
+    return jsonlib.loads(path.read_text(encoding='utf-8'))
+
+def zcode_route_report(cli_path=None, v2_path=None):
+    report = {plan: {'supported': False, 'reason': 'start_route_not_implemented' if plan == 'start' else 'login_route_unavailable', 'provider_id': ZCODE_CODING_PROVIDER_ID if plan == 'coding' else ZCODE_START_PROVIDER_KEY, 'models': {}} for plan in ZCODE_PLANS}
+    if not zcode_available():
+        for row in report.values():
+            row['reason'] = 'cli_adapter_unavailable'
+        return report
+    if not zcode_executable():
+        for row in report.values():
+            row['reason'] = 'cli_executable_unavailable'
+        return report
+    home = Path.home() / '.zcode'
+    cli = home / 'cli' / 'config.json' if cli_path is None else Path(cli_path)
+    v2 = home / 'v2' / 'config.json' if v2_path is None else Path(v2_path)
+    try:
+        provider = _bounded_json_read(cli).get('provider', {}).get(ZCODE_CODING_PROVIDER_ID)
+        if not isinstance(provider, dict) or not isinstance(provider.get('models'), dict) or (not provider['models']):
+            report['coding']['reason'] = 'provider_absent'
+        else:
+            options = provider.get('options')
+            api_key = options.get('apiKey') if isinstance(options, dict) else Ellipsis
+            headers = provider.get('headers')
+            official = provider.get('kind') == 'anthropic' and isinstance(options, dict) and (options.get('baseURL') == ZCODE_CLI_CODING_ENDPOINT) and (options.get('apiKeyRequired') is True) and (api_key is None or api_key == '') and (not (isinstance(headers, dict) and headers))
+            if not official:
+                report['coding']['reason'] = 'provider_config_unsupported'
+            else:
+                models = {}
+                for name, entry in provider['models'].items():
+                    identifier = str(name).lower()
+                    if _MODEL_ID.fullmatch(identifier) and '://' not in identifier:
+                        models[identifier] = _zcode_model_metadata(entry)
+                if models:
+                    report['coding']['models'] = models
+                else:
+                    report['coding']['reason'] = 'provider_models_unreadable'
+    except (OSError, ValueError):
+        report['coding']['reason'] = 'cli_config_unreadable'
+    try:
+        entry = _bounded_json_read(v2).get('provider', {}).get(ZCODE_START_PROVIDER_KEY)
+        if isinstance(entry, dict) and isinstance(entry.get('models'), dict):
+            app_models = []
+            for name in entry['models']:
+                identifier = str(name).lower()
+                if _MODEL_ID.fullmatch(identifier) and '://' not in identifier:
+                    app_models.append(identifier)
+            if app_models:
+                report['start']['app_models'] = app_models[:MAX_MODELS]
+    except (OSError, ValueError):
+        pass
+    return report
+
+def zcode_plan_models(plan, report=None):
+    if plan not in ZCODE_PLANS:
+        return ()
+    report = zcode_route_report() if report is None else report
+    row = report.get(plan)
+    models = row.get('models') if isinstance(row, dict) else None
+    if not isinstance(models, dict) or not models:
+        return ()
+    if plan == 'coding':
+        return tuple((model for model in ZCODE_MODELS if model in models))
+    return tuple(models)
+
+def zcode_plan_summary(cli_path=None, v2_path=None):
+    report = zcode_route_report(cli_path, v2_path)
+    return {plan: {'supported': row['supported'], 'reason': row['reason'], 'provider_id': row['provider_id'], 'models': list(row['models'])} for plan, row in report.items()}
 PROTOCOL = 'openai_chat_completions'
 GLM_MODEL_CANDIDATES = model_catalog.GLM_MODEL_CANDIDATES
 GLM_MODEL_REFERENCE = model_catalog.GLM_CHAT_DOCUMENT
@@ -40,7 +171,7 @@ MAX_EXTRA_BYTES = 16384
 _MODEL_ID = re.compile('[A-Za-z0-9][A-Za-z0-9_.:/@+-]{0,255}\\Z')
 _EFFORT = re.compile('[A-Za-z0-9][A-Za-z0-9_.-]{0,63}\\Z')
 _V2_FIELDS = frozenset({'base_url', 'protocol', 'models_url', 'thinking', 'extra_body', 'endpoint_confirmed'})
-_PROFILE_FIELDS = frozenset({'provider', 'model', 'reasoning_effort', 'timeout', 'max_tokens'}) | _V2_FIELDS
+_PROFILE_FIELDS = frozenset({'provider', 'model', 'reasoning_effort', 'timeout', 'max_tokens', 'plan'}) | _V2_FIELDS
 _EXTRA_BLOCKED = frozenset({'model', 'messages', 'stream', 'streamoptions', 'maxtokens', 'maxcompletiontokens', 'reasoningeffort', 'thinking', 'headers', 'header', 'extraheaders', 'defaultheaders', 'authorization', 'authentication', 'auth', 'apikey', 'xapikey', 'key', 'keys', 'token', 'accesstoken', 'bearer', 'cookie', 'cookies', 'password', 'secret', 'credentials', 'credential', 'baseurl', 'modelsurl', 'url', 'endpoint', 'protocol', 'provider', 'endpointconfirmed', 'proxy', 'proxies', 'verify', 'cert', 'timeout', 'tools', 'toolchoice', 'toolcalls', 'toolstream', 'functions', 'functioncall', 'paralleltoolcalls', 'extrabody', 'extraquery', 'query', 'params'})
 _TOKEN_FIELDS = ('prompt_tokens', 'completion_tokens', 'total_tokens', 'prompt_cache_hit_tokens', 'prompt_cache_miss_tokens')
 
@@ -83,7 +214,13 @@ class ImmutableDict(dict):
         return self
 
 def _provider(value):
-    if not isinstance(value, str) or value not in ENDPOINTS:
+    if not isinstance(value, str):
+        raise ConfigError('invalid_provider')
+    if value == ZCODE_PROVIDER:
+        if not zcode_available():
+            raise ConfigError('zcode_adapter_unavailable')
+        return value
+    if value not in ENDPOINTS:
         raise ConfigError('invalid_provider')
     return value
 
@@ -180,6 +317,19 @@ def _profile(value, *, for_models=False):
     effort = value.get('reasoning_effort', 'default')
     if type(effort) is not str or not _EFFORT.fullmatch(effort):
         raise ConfigError('invalid_reasoning_effort')
+    if provider == ZCODE_PROVIDER:
+        if set(value) & _V2_FIELDS:
+            raise ConfigError('zcode_no_endpoint_fields')
+        plan = value.get('plan', 'coding')
+        if plan not in ZCODE_PLANS:
+            raise ConfigError('zcode_unknown_plan')
+        if effort not in ZCODE_EFFORTS:
+            raise ConfigError('zcode_effort_level')
+        if model and model not in ZCODE_MODELS:
+            raise ConfigError('zcode_unknown_model')
+        return {'provider': provider, 'plan': plan, 'model': model, 'reasoning_effort': effort, 'timeout': _integer(value.get('timeout', 1500), 1500, 'invalid_timeout'), 'max_tokens': _integer(value.get('max_tokens', ZCODE_MAX_TOKENS), ZCODE_MAX_TOKENS, 'invalid_max_tokens')}
+    if 'plan' in value:
+        raise ConfigError('plan_zcode_only')
     normalized = {'provider': provider, 'model': model, 'reasoning_effort': effort, 'timeout': _integer(value.get('timeout', 1500), 1500, 'invalid_timeout'), 'max_tokens': _integer(value.get('max_tokens', 32768), TOKEN_LIMITS[provider], 'invalid_max_tokens')}
     if not set(value) & _V2_FIELDS:
         return normalized
@@ -198,8 +348,8 @@ def _profile(value, *, for_models=False):
     models_url = value.get('models_url', MODEL_ENDPOINTS.get(provider, ''))
     if models_url != '':
         models_url = _endpoint_url(models_url)
-    public_coding_docs = for_models and provider == 'glm' and (models_url == '') and (base_url == 'https://open.bigmodel.cn/api/coding/paas/v4')
-    if not confirmed and (not public_coding_docs) and (base_url != BASE_URLS[provider] or models_url not in ('', MODEL_ENDPOINTS.get(provider, ''))):
+    trusted_coding = provider == 'glm' and models_url == '' and (base_url == GLM_CODING_BASE_URL)
+    if not confirmed and (not trusted_coding) and (base_url != BASE_URLS[provider] or models_url not in ('', MODEL_ENDPOINTS.get(provider, ''))):
         raise ConfigError('endpoint_confirmation_required')
     extra_body = _extra_body(value.get('extra_body', {}))
     if provider == 'tongji':
@@ -221,28 +371,37 @@ def validate_profile(profile, *, for_models=False):
     return _profile(profile, for_models=for_models)
 
 def profile_defaults():
-    return {provider: _profile({'provider': provider, 'model': '', 'protocol': PROTOCOL, 'max_tokens': 32768 if provider == 'tongji' else TOKEN_LIMITS[provider], 'reasoning_effort': 'default' if provider == 'tongji' else 'max', 'thinking': 'default' if provider == 'tongji' else 'enabled'}, for_models=True) for provider in ENDPOINTS}
+    defaults = {provider: _profile({'provider': provider, 'model': '', 'protocol': PROTOCOL, 'base_url': GLM_CODING_BASE_URL if provider == 'glm' else BASE_URLS[provider], 'max_tokens': 32768 if provider == 'tongji' else TOKEN_LIMITS[provider], 'reasoning_effort': 'high', 'thinking': 'default' if provider == 'tongji' else 'enabled'}, for_models=True) for provider in ENDPOINTS}
+    if zcode_available():
+        defaults[ZCODE_PROVIDER] = _profile({'provider': ZCODE_PROVIDER, 'model': '', 'plan': 'coding', 'max_tokens': ZCODE_MAX_TOKENS, 'reasoning_effort': 'high'}, for_models=True)
+    return defaults
 
-def highest_parameters(profile, details=None):
+def _verified_capabilities(profile, details=None):
     selected = _profile(profile, for_models=True)
     model = selected['model']
     kind = _catalog_endpoint_kind(selected['provider'], selected)
     if kind == 'coding_plan' and model not in model_catalog.GLM_CODING_CANDIDATES:
-        return {}
+        return None
     metadata = details if isinstance(details, Mapping) else {}
     if metadata.get('endpoint_kind', kind) != kind or (kind == 'custom' and metadata.get('source') in ('official_docs', 'official_cache', 'bundled_catalog')):
-        return {}
+        return None
     reference = metadata.get('reference')
     if metadata.get('source') == 'provider_api' and reference != _profile_urls(selected['provider'], selected)[1]:
-        return {}
+        return None
     if kind == 'custom' and reference in MODEL_ENDPOINTS.values():
-        return {}
+        return None
     if isinstance(metadata.get('details'), Mapping):
         metadata = metadata['details']
     if model in metadata and isinstance(metadata[model], Mapping):
         metadata = metadata[model]
     kept = _model_details({'max_output_tokens': metadata.get('max_output_tokens'), 'effort': {'supported_levels': metadata.get('effort_levels'), 'default_level': metadata.get('default_effort')}})
-    capabilities = model_catalog.enrich_details(selected['provider'], model, kept, kind=kind)
+    return (selected, model_catalog.enrich_details(selected['provider'], model, kept, kind=kind))
+
+def highest_parameters(profile, details=None):
+    resolved = _verified_capabilities(profile, details)
+    if resolved is None:
+        return {}
+    selected, capabilities = resolved
     result = {}
     if 'max_output_tokens' in capabilities:
         result['max_tokens'] = capabilities['max_output_tokens']
@@ -251,6 +410,21 @@ def highest_parameters(profile, details=None):
         result['reasoning_effort'] = highest
         if selected['provider'] != 'tongji':
             result['thinking'] = 'disabled' if highest == 'none' else 'enabled'
+    return result
+
+def recommended_parameters(profile, details=None):
+    resolved = _verified_capabilities(profile, details)
+    if resolved is None:
+        return {}
+    selected, capabilities = resolved
+    result = {}
+    if 'max_output_tokens' in capabilities:
+        result['max_tokens'] = capabilities['max_output_tokens']
+    recommended = model_catalog.recommended_effort(capabilities.get('effort_levels'))
+    if recommended is not None:
+        result['reasoning_effort'] = recommended
+        if selected['provider'] != 'tongji':
+            result['thinking'] = 'enabled'
     return result
 
 def _profile_urls(provider, profile=None):
@@ -284,6 +458,8 @@ def _store(key_store=None, path=None):
     return key_store if key_store is not None else DPAPIConfigStore(path)
 
 def _get_key(store, provider):
+    if provider == ZCODE_PROVIDER:
+        raise ConfigError('zcode_route_unavailable')
     try:
         value = store.get(provider) if isinstance(store, Mapping) else store.get_key(provider)
         if value is None or value == '':
@@ -307,6 +483,10 @@ def validate_config(config, require_credentials=False, *, key_store=None, path=N
         for provider in {normalized[role]['provider'] for role in required_roles}:
             _get_key(store, provider)
     return normalized
+
+def assert_callable_routes(config, required_roles):
+    if any((config[role]['provider'] == ZCODE_PROVIDER for role in required_roles)):
+        raise ConfigError('zcode_route_unavailable')
 
 class DPAPIConfigStore:
 
@@ -372,6 +552,8 @@ def public_config(*, path=None, key_store=None):
     document = _store(key_store, path).load()
     config = None if document is None or document['config'] is None else validate_config(document['config'])
     credentials = {p: bool(document and document['keys'].get(p)) for p in ENDPOINTS}
+    if zcode_available():
+        credentials[ZCODE_PROVIDER] = zcode_logged_in()
     configured = config is not None and all((credentials[config[r]['provider']] for r in ('qc', 'zh')))
     return {'configured': configured, 'config': config, 'credentials': credentials}
 
@@ -482,7 +664,8 @@ class RequestsTransport:
             self._allowed = {('POST', u) for u in ENDPOINTS.values()} | {('GET', u) for u in MODEL_ENDPOINTS.values()}
         else:
             profile = _profile(profile, for_models=True)
-            if not profile.get('endpoint_confirmed', False) and profile.get('base_url', BASE_URLS[profile['provider']]) != BASE_URLS[profile['provider']]:
+            base_url = profile.get('base_url', BASE_URLS[profile['provider']])
+            if not profile.get('endpoint_confirmed', False) and base_url != BASE_URLS[profile['provider']] and (not (profile['provider'] == 'glm' and profile.get('models_url', '') == '' and (base_url == GLM_CODING_BASE_URL))):
                 raise ConfigError('endpoint_confirmation_required')
             chat_url, models_url = _profile_urls(profile['provider'], profile)
             self._allowed = {('POST', chat_url)} | ({('GET', models_url)} if models_url else set())
@@ -657,7 +840,9 @@ class APIBackend:
         self._profile = MappingProxyType(normalized)
         self._role, self.log = (role, log)
         self._model = normalized['provider'] + '/' + normalized['model']
-        identity = {'adapter': 'model_api', 'schema': 1, 'provider': normalized['provider'], 'endpoint': _profile_urls(normalized['provider'], normalized)[0], 'model': normalized['model'], 'reasoning_effort': normalized['reasoning_effort'], 'max_tokens': normalized['max_tokens'], 'timeout': normalized['timeout'], 'role': role}
+        identity = {'adapter': 'model_api', 'schema': 1, 'provider': normalized['provider'], 'endpoint': 'zcode-cli' if normalized['provider'] == ZCODE_PROVIDER else _profile_urls(normalized['provider'], normalized)[0], 'model': normalized['model'], 'reasoning_effort': normalized['reasoning_effort'], 'max_tokens': normalized['max_tokens'], 'timeout': normalized['timeout'], 'role': role}
+        if normalized['provider'] == ZCODE_PROVIDER:
+            identity.update(plan=normalized['plan'], reasoning_level=normalized['reasoning_effort'] if normalized['reasoning_effort'] in ZCODE_LEVELS else '')
         if 'protocol' in normalized:
             identity.update({name: normalized[name] for name in _V2_FIELDS if name != 'extra_body'})
             identity.update(schema=2, extra_body=jsonlib.dumps(normalized['extra_body'], sort_keys=True, separators=(',', ':'), ensure_ascii=True))
@@ -696,6 +881,9 @@ class APIBackend:
     def last_response_model(self):
         return getattr(self._response_local, 'model', None)
 
+    def _ask_zcode(self, prompt, p):
+        raise ConfigError('zcode_route_unavailable') from None
+
     def _mark(self, model):
         if not isinstance(model, str):
             raise ConfigError('invalid_usage_model')
@@ -714,6 +902,9 @@ class APIBackend:
         if not isinstance(prompt, str) or not prompt.strip():
             raise ConfigError('invalid_prompt')
         p = self._profile
+        if p['provider'] == ZCODE_PROVIDER:
+            return self._ask_zcode(prompt, p)
+        payload = {'model': p['model'], 'messages': [{'role': 'user', 'content': prompt}], 'stream': False, 'max_tokens': p['max_tokens']}
         payload = {'model': p['model'], 'messages': [{'role': 'user', 'content': prompt}], 'stream': False, 'max_tokens': p['max_tokens']}
         effort = p['reasoning_effort']
         if 'protocol' in p:
@@ -771,7 +962,10 @@ def test_connection(provider=None, model=None, reasoning_effort=None, *, profile
             reasoning_effort = selected.get('reasoning_effort', 'default')
         selected['reasoning_effort'] = reasoning_effort
         selected = _profile(selected)
-    selected.update(timeout=min(selected['timeout'], 60), max_tokens=min(selected['max_tokens'], 1024))
+    if selected['provider'] == ZCODE_PROVIDER:
+        selected.update(timeout=min(selected['timeout'], 300))
+    else:
+        selected.update(timeout=min(selected['timeout'], 60), max_tokens=min(selected['max_tokens'], 1024))
     backend = APIBackend(selected, role, log=None, key_store=store, transport=transport, slot_root=slot_root, sleep=sleep)
     backend.ask('Reply with exactly OK.')
     return {'ok': True, **backend.last_usage}
@@ -783,6 +977,13 @@ def _listing_profile(provider, profile):
         raise ConfigError('ambiguous_profile')
     selected = _profile(profile, for_models=True)
     return (selected['provider'], selected)
+
+def _zcode_unavailable_choices(plan):
+    if plan not in ZCODE_PLANS:
+        plan = 'coding'
+    reason = zcode_route_report()[plan].get('reason') or 'login_route_unavailable'
+    label = 'Start Plan 没有可调用的本机 CLI 路由（未实现官方 Start 调用，也不自建私有 OAuth 适配）' if plan == 'start' else 'ZCode 本机登录直连已停用：插件不复制本机 ZCode 凭据，安装版 CLI 也没有经验证的无头按模型调用入口'
+    return {'provider': ZCODE_PROVIDER, 'plan': plan, 'models': [], 'source': 'bundled_catalog', 'endpoint_kind': ZCODE_PROVIDER, 'fetched_at': None, 'notice': f'{label}（{reason}）。不会改走其它订阅或计费服务商；请改选 API Key 服务商（GLM / DeepSeek / 同济）。已保存的 ZCode 配置仍可读取显示，便于迁移。'}
 
 def _model_details(entry):
     result = {}
@@ -846,7 +1047,11 @@ def check_tongji_model_ids(config, roles):
         raise ConfigError(f'当前同济 Key 的模型列表中找不到所选{label}模型，请重新获取列表并选择。')
 
 def model_choices(provider=None, *, profile=None, key_store=None, path=None, transport=None, slot_root=None, sleep=time.sleep, catalog=None, refresh=True):
+    if isinstance(profile, Mapping) and profile.get('provider') == ZCODE_PROVIDER:
+        return _zcode_unavailable_choices(profile.get('plan', 'coding'))
     provider, profile = _listing_profile(provider, profile)
+    if provider == ZCODE_PROVIDER:
+        return _zcode_unavailable_choices((profile or {}).get('plan', 'coding'))
     kind = _catalog_endpoint_kind(provider, profile)
     if not _profile_urls(provider, profile)[1]:
         if provider == 'glm' and kind in ('standard', 'coding_plan'):

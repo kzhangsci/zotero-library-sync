@@ -9,6 +9,7 @@ var LibrarySyncPanel = (() => {
     const n = Math.floor(seconds);
     return `${Math.floor(n / 3600)}时${String(Math.floor(n / 60) % 60).padStart(2, "0")}分${String(n % 60).padStart(2, "0")}秒`;
   }
+  const objectLike = x => x !== null && typeof x === "object" && !Array.isArray(x);
   class Controller {
     constructor(window, host, client) {
       this.window = window; this.doc = window.document; this.host = host; this.client = client;
@@ -30,6 +31,10 @@ var LibrarySyncPanel = (() => {
       this.historyLoading = null;
       this.selections = []; this.rowSignatures = new Map(); this.selectionControls = []; this.rowDescriptions = new Map();
       this.testStates = {}; this.profileProviders = {};
+      // Per-paper diagnosis view (beta.15): the selected paper's details stay
+      // mounted in their own section, so status-table refreshes never destroy
+      // an open diagnosis; remedy results render into the same section.
+      this.diagnosis = null; this.remedyBusy = false; this.acronymTitles = [];
       // Model drafts are separate from the discovery scope: editing them keeps
       // the preview and per-paper selections, only marking the binding stale.
       this.modelDirty = false;
@@ -39,6 +44,10 @@ var LibrarySyncPanel = (() => {
       // request can never overwrite or delete a newer one.
       this.modelCatalogs = new Map(); this.catalogPending = {}; this.catalogInflight = {}; this.catalogTokens = {};
       this.keyEpoch = { glm: 0, deepseek: 0, tongji: 0 };
+      // Sanitized per-plan support metadata from the bridge (zcode-plans-v1).
+      this.zcodePlans = null;
+      // Boot lifecycle: sanitized stage labels for the host handshake.
+      this.bootStage = "constructed"; this.readySignaled = false;
     }
     el(id) { return this.doc.getElementById(id); }
     text(id, value) {
@@ -146,11 +155,14 @@ var LibrarySyncPanel = (() => {
       };
       attach("chunk-parallel", ["1", "2"], () => { this.invalidate(); this.update(); }, false);
       for (const phase of ["qc", "zh"]) {
-        attach(phase + "-provider", [{ value: "glm", label: "GLM（智谱 Key）" }, { value: "deepseek", label: "DeepSeek" }, { value: "tongji", label: "同济校内 API（独立 Key）" }], () => this.modelFieldChanged(phase, "provider"));
+        attach(phase + "-provider", [{ value: "glm", label: "GLM（默认 Coding Plan）" }, { value: "deepseek", label: "DeepSeek" }, { value: "tongji", label: "同济校内 API（独立 Key）" },
+          { value: "zcode", label: "ZCode 登录（本机 CLI 直连，新版停用）" }], () => this.modelFieldChanged(phase, "provider"));
         attach(phase + "-model", [], () => this.selectModelOption(phase), true, true);
         attach(phase + "-effort", ["default"], () => this.modelFieldChanged(phase, "effort"));
         attach(phase + "-thinking", ["default", "enabled", "disabled"], () => this.modelFieldChanged(phase, "thinking"));
         attach(phase + "-protocol", ["openai_chat_completions"], () => this.modelFieldChanged(phase, "protocol"));
+        attach(phase + "-plan", [{ value: "coding", label: "Coding Plan · bigmodel 服务商" }, { value: "start", label: "Start Plan · 以本机 CLI 支持为准" }],
+          () => this.modelFieldChanged(phase, "plan"), false);
         attach(phase + "-habit", Bridge.habitPresets().map(p => p.label), () => this.updateHabitNote(phase), false);
         this.updateHabitNote(phase);
       }
@@ -161,52 +173,79 @@ var LibrarySyncPanel = (() => {
         const provider = this.el(phase + "-provider").value.trim().toLowerCase();
         const previous = this.profileProviders[phase];
         if (provider === previous) return;
-        if (["glm", "deepseek", "tongji"].includes(provider)) {
-          const old = previous && Bridge.profileDefaults(previous), next = Bridge.profileDefaults(provider);
+        if (["glm", "deepseek", "tongji", "zcode"].includes(provider)) {
+          const oldTemplates = previous ? [Bridge.profileDefaults(previous), Bridge.hydrationDefaults(previous)] : [];
+          const next = Bridge.profileDefaults(provider);
+          // A provider without endpoint fields (the zcode login) cannot have
+          // user-edited URLs, so switching away adopts the new provider's
+          // trusted defaults instead of leaving empty, invalid inputs.
+          const noEndpoints = previous === "zcode";
+          const untouched = (field, key) => noEndpoints || oldTemplates.some(d => String(this.el(phase + "-" + field).value) === String(d[key]));
           // Only migrate unchanged provider defaults. Custom endpoints and parameters survive.
           for (const [field, key] of [["base-url", "base_url"], ["models-url", "models_url"]]) {
-            if (old && this.el(phase + "-" + field).value === old[key]) this.el(phase + "-" + field).value = next[key];
+            if (next[key] !== undefined) { if (untouched(field, key)) this.el(phase + "-" + field).value = next[key]; }
+            else this.el(phase + "-" + field).value = "";
           }
-          if (provider === "tongji" || previous === "tongji") {
+          if (noEndpoints) {
+            // A zcode draft never carried protocol or thinking values (the
+            // login sends neither): adopt the new provider's template instead
+            // of leaving inputs that cannot validate or misstate the choice.
+            this.el(phase + "-protocol").value = next.protocol ?? "";
+            if (next.thinking !== undefined) this.el(phase + "-thinking").value = next.thinking;
+          }
+          if (provider === "tongji" || previous === "tongji" || provider === "zcode" || previous === "zcode") {
             for (const [field, key] of [["effort", "reasoning_effort"], ["max-tokens", "max_tokens"]]) {
-              if (old && String(this.el(phase + "-" + field).value) === String(old[key])) this.el(phase + "-" + field).value = next[key];
+              if (untouched(field, key) && next[key] !== undefined) this.el(phase + "-" + field).value = String(next[key]);
             }
           }
           if (provider === "tongji") this.el(phase + "-thinking").value = "default";
+          if (provider === "zcode") this.el(phase + "-plan").value = "coding";
           this.profileProviders[phase] = provider; this.el(phase + "-provider").value = provider;
         }
         this.endpointConfirmed[phase] = false; this.clearModelOptions(phase);
+        // Recognized default endpoints immediately offer the bundled offline
+        // snapshot; custom addresses stay empty until an explicit fetch.
+        this.presentBundledCatalog(phase);
         this.text(phase + "-provider-notice", provider === "tongji"
           ? "已选择同济独立 Key；未改动的地址和模板参数已调整，thinking 固定为 default。请填写校内模型 ID，reasoning_effort 控制思考；手工地址及参数已保留，草稿尚未保存。"
+          : provider === "zcode"
+          ? this.zcodePlanNotice(phase, "coding")
           : "切换服务商仅更新未改动的默认地址；已保留模型及手工参数。请核对 Key 来源、API 地址与模型；可展开高级参数并恢复默认值。");
         if (provider !== previous) this.autoLoadCatalog(phase);
+      }
+      if (field === "plan") {
+        this.text(phase + "-provider-notice", this.zcodePlanNotice(phase, this.el(phase + "-plan").value === "start" ? "start" : "coding"));
       }
       if (["model", "thinking", "effort"].includes(field)) this.updateEffortOptions(phase);
       if (["base-url", "models-url", "protocol"].includes(field)) {
         this.endpointConfirmed[phase] = false; this.clearModelOptions(phase);
+        this.presentBundledCatalog(phase);
       }
       delete this.testStates[phase]; this.text(phase + "-test-state", "配置已更改，尚未测试此配置。");
       this.configDirty = true; this.markModelDirty(); this.update();
     }
     applyProviderDefaults(phase) {
       const provider = this.el(phase + "-provider").value.trim().toLowerCase();
-      if (!["glm", "deepseek", "tongji"].includes(provider)) {
-        this.text(phase + "-effort-notice", "Provider / Key 来源请填 glm、deepseek 或 tongji；API 地址可另行自填。");
+      if (!["glm", "deepseek", "tongji", "zcode"].includes(provider)) {
+        this.text(phase + "-effort-notice", "Provider / Key 来源请填 glm、deepseek、tongji 或 zcode；API 地址可另行自填。");
         this.configDirty = true; this.markModelDirty(); this.update(); return;
       }
       this.el(phase + "-provider").value = provider;
       const defaults = Bridge.profileDefaults(provider);
-      for (const [field, key] of [["base-url", "base_url"], ["models-url", "models_url"], ["protocol", "protocol"], ["thinking", "thinking"], ["effort", "reasoning_effort"], ["timeout", "timeout"], ["max-tokens", "max_tokens"]]) {
-        this.el(phase + "-" + field).value = defaults[key];
+      for (const [field, key] of [["base-url", "base_url"], ["models-url", "models_url"], ["protocol", "protocol"], ["thinking", "thinking"], ["effort", "reasoning_effort"], ["timeout", "timeout"], ["max-tokens", "max_tokens"], ["plan", "plan"]]) {
+        if (key === "plan" && provider !== "zcode") continue;
+        this.el(phase + "-" + field).value = defaults[key] ?? "";
       }
       this.el(phase + "-extra-body").value = "{}"; this.endpointConfirmed[phase] = false;
       this.clearModelOptions(phase); this.updateEffortOptions(phase);
       delete this.testStates[phase]; this.text(phase + "-test-state", "默认参数已恢复，尚未测试。");
-      this.text(phase + "-provider-notice", "已将地址、协议、thinking、effort、超时、输出长度及附加参数恢复为插件初始值（不是服务端默认值）；模型 ID 保留，草稿尚未保存，请核对后保存。");
+      this.text(phase + "-provider-notice", "已将地址、协议、thinking、effort、超时、输出长度及附加参数恢复为插件初始值（用户偏好默认：thinking 开启、effort=high；同济 thinking 固定 default、由 effort 表达；ZCode 订阅仍显式选择）。这不是服务端默认值；模型 ID 保留，草稿尚未保存，请核对后保存。");
       this.configDirty = true; this.markModelDirty(); this.update();
     }
     modelContext(phase) {
-      return { provider: this.el(phase + "-provider").value.trim().toLowerCase(), model: this.el(phase + "-model").value.trim(),
+      const provider = this.el(phase + "-provider").value.trim().toLowerCase();
+      return { provider, model: this.el(phase + "-model").value.trim(),
+        ...(provider === "zcode" ? { plan: this.el(phase + "-plan").value === "start" ? "start" : "coding" } : {}),
         base_url: this.el(phase + "-base-url").value.trim().replace(/\/+$/, ""), models_url: this.el(phase + "-models-url").value.trim(),
         protocol: this.el(phase + "-protocol").value, endpoint_confirmed: this.endpointConfirmed[phase],
         thinking: this.el(phase + "-thinking").value, reasoning_effort: this.el(phase + "-effort").value };
@@ -224,17 +263,43 @@ var LibrarySyncPanel = (() => {
         : "effort 控制思考投入；较高档位通常更慢、可能消耗更多输出。default 不发送 reasoning_effort，既不是最低档也不是关闭。与 thinking 分别设置，不保证所有组合都有效。");
       this.text(phase + "-max-tokens-help", school
         ? "32768 是同济配置的可编辑请求初值，不代表校内模型最大输出。max_tokens 限制单次生成长度，不能扩大上下文窗口；请按所选校内模型详情核实输出与上下文限制，并为推理和最终正文保留足够预算。"
-        : "限制单次生成的输出 token 数，不是输入长度或上下文窗口（context）。输入 + 生成内容还须满足模型上下文限制；提高此值不会扩大 context。思考模型需给推理与最终正文留足预算，过小可能截断。新建空白模板显式使用 GLM 131072 / DeepSeek 393216、effort=max、thinking=enabled；已保存配置不会自动覆盖。具体模型能力未知时请手填，default 仍表示服务端默认。");
+        : "限制单次生成的输出 token 数，不是输入长度或上下文窗口（context）。输入 + 生成内容还须满足模型上下文限制；提高此值不会扩大 context。思考模型需给推理与最终正文留足预算，过小可能截断。新建空白模板显式使用 GLM 131072 / DeepSeek 393216、effort=high、thinking=enabled；已保存配置不会自动覆盖。具体模型能力未知时请手填，default 仍表示服务端默认。");
       const suggestions = [...new Set(["default", ...help.effortLevels])];
       this.pickers[phase + "-effort"]?.setOptions(suggestions);
+      const recommendedNote = help.recommended
+        ? `推荐默认（用户偏好，新模板即此值）：${help.recommended.thinking ? `thinking=${help.recommended.thinking}、` : ""}effort=${help.recommended.reasoning_effort}` +
+          `${help.recommended.fallback ? "（该模型档位无 high，已按文档支持档位回退）" : ""}；与服务端默认、最高档相互独立，均可另行手选。`
+        : "";
       this.text(phase + "-effort-notice", (detail?.effort_levels?.length
-        ? `候选来自此模型的${choices.source === "provider_api" ? "接口元数据" : "官方文档参数快照（非实时）"}；${detail.default_effort ? "服务端默认 " + detail.default_effort + "。" : ""}` : "") + help.effort);
+        ? `候选来自此模型的${choices.source === "provider_api" ? "接口元数据" : "官方文档参数快照（非实时）"}；${detail.default_effort ? "服务端默认 " + detail.default_effort + "。" : ""}` : "") + recommendedNote + help.effort);
       this.text(phase + "-thinking-notice", help.thinking);
       this.text(phase + "-tokens-notice", help.tokens);
       this.text(phase + "-endpoint-notice", help.endpointHelp);
       this.text(phase + "-maximum-notice", help.maximum
         ? `可填写此模型最高参数：max_tokens=${help.maximum.max_tokens}，reasoning_effort=${help.maximum.reasoning_effort}。仅修改本角色草稿，需保存后生效。`
         : "尚未核实此模型 / 端点的完整最高参数；当前数值可能来自模板或原配置，不代表该模型支持。请按官方文档手填，插件不改动当前参数。");
+    }
+    applyModelDefaults(phase) {
+      // Selecting a known model fills the USER-PREFERRED defaults (thinking ON
+      // + effort high, falling back to a documented supported level when high
+      // is absent). The maximum stays a separate explicit action and every
+      // other option in the pickers remains selectable.
+      if (this.closed) return;
+      const recommended = Bridge.modelRecommended(this.modelContext(phase), this.modelOptions[phase]);
+      if (!recommended) {
+        this.updateEffortOptions(phase);
+        this.message(`${phase.toUpperCase()} 未能核实该模型 / 端点的文档档位，未自动填写 thinking / effort；当前参数未改动，请按官方文档手选，模型草稿需保存后生效。`);
+        return;
+      }
+      if (recommended.max_tokens !== undefined) this.el(phase + "-max-tokens").value = recommended.max_tokens;
+      this.el(phase + "-effort").value = recommended.reasoning_effort;
+      if (recommended.thinking) this.el(phase + "-thinking").value = recommended.thinking;
+      this.modelFieldChanged(phase, "effort");
+      const fallbackNote = recommended.fallback
+        ? `（该模型文档档位无 high，已回退到文档支持的 ${recommended.reasoning_effort}；其它档位仍可手选）` : "";
+      this.text(phase + "-maximum-notice", `已按模型文档填写推荐默认参数（thinking 开启、effort=${recommended.reasoning_effort}` +
+        `${recommended.max_tokens !== undefined ? `，max_tokens=${recommended.max_tokens}` : ""}）${fallbackNote}；官方默认与最高档另见说明。本角色草稿尚未保存，请保存模型配置。`);
+      this.message(`${phase.toUpperCase()} 已填写推荐默认参数（thinking 开启、effort=${recommended.reasoning_effort}）${fallbackNote}，草稿尚未保存；请保存模型配置。`);
     }
     applyModelMaximum(phase) {
       if (this.closed) return;
@@ -281,8 +346,8 @@ var LibrarySyncPanel = (() => {
       this.message(`${phase.toUpperCase()} 已填入“${selected.label}”预设，草稿尚未保存；请核对后点击“保存模型配置”。`);
     }
     confirmEndpoint(phase, profile) {
-      const defaults = Bridge.profileDefaults(profile.provider);
-      if (profile.base_url === defaults.base_url && profile.models_url === defaults.models_url) return profile;
+      const trusted = [Bridge.profileDefaults(profile.provider), Bridge.hydrationDefaults(profile.provider)];
+      if (trusted.some(d => profile.base_url === d.base_url && profile.models_url === d.models_url)) return profile;
       if (!this.endpointConfirmed[phase]) {
         const yes = this.window.confirm(`使用自定义 API 地址？\n${phase.toUpperCase()} 将向下面地址发送所选 ${profile.provider} 的 Key 和请求；论文运行时也会发送待处理正文。\nAPI：${profile.base_url}\n模型列表：${profile.models_url || "不请求列表"}\n协议：${profile.protocol}\n确认这是你信任的服务？`);
         if (!yes || this.closed) throw new Bridge.SafeError("INPUT", "未确认自定义 API 地址，未发送请求。");
@@ -308,17 +373,135 @@ var LibrarySyncPanel = (() => {
       }
       this.modelCatalogs.set(identity, { choices, at: Date.now() });
     }
+    readZcodePlans(value) {
+      // Sanitized per-plan support metadata from the bridge; bounded strings only.
+      if (!objectLike(value)) return null;
+      const result = {};
+      for (const plan of ["coding", "start"]) {
+        const row = objectLike(value[plan]) ? value[plan] : {};
+        result[plan] = {
+          supported: row.supported === true,
+          reason: typeof row.reason === "string" ? row.reason.slice(0, 200) : "",
+          providerId: typeof row.provider_id === "string" ? row.provider_id.slice(0, 64) : "",
+          models: Array.isArray(row.models) ? row.models.filter(m => typeof m === "string" && m.length <= 128).slice(0, 64) : []
+        };
+      }
+      return result;
+    }
+    zcodePlanNotice(phase, plan) {
+      if (!this.capabilities.includes("zcode-plans-v1")) {
+        return "已选择 ZCode 登录：本机 bridge 是旧版（beta.13 及更早），其 ZCode 调用会复制本机完整凭据，beta.14 起已停用——测试、列表与保存均禁用，不再发送旧版请求。请更新本机 bridge 后重新连接，或先将该角色改选 API Key 服务商；已保存的 ZCode 配置仍显示于此、不会被改写。";
+      }
+      if (plan === "start") {
+        const info = this.zcodePlans?.start;
+        if (info?.supported === true) {
+          return "已选 ZCode 登录 · Start Plan：走本机 CLI 的 Start Plan 服务商（zcode.z.ai 计划端点）。模型按本机实际清单列出（" +
+            (info.models.length ? info.models.join(" / ") : "未提供") + "），不代表其它订阅权限；请测试连接确认。";
+        }
+        return "ZCode 登录 · Start Plan 在本机不可用：" + this.zcodeReasonText("start") +
+          "。测试、列表与保存已禁用：不会改走 Coding Plan，也不会另发私有 OAuth 请求；请改选 API Key 服务商。";
+      }
+      const info = this.zcodePlans?.coding;
+      if (info?.supported === true) {
+        return "已选 ZCode 登录 · Coding Plan：显式走本机 CLI 的 bigmodel Coding Plan 服务商（open.bigmodel.cn/api/anthropic），不是自动路由。模型可选 " +
+          (info?.models.length ? info.models.join(" / ") : "glm-5.3 / glm-5.3-flash") +
+          "，推理档 default / low / high / max；每次调用启动无头 ZCode 进程，速度慢于直连 API，请保持 ZCode 已登录，测试连接可验证订阅可用性。";
+      }
+      const listed = info?.models.length ? "本机 CLI 配置提及模型 " + info.models.join(" / ") + "（仅显示，不代表可用）。" : "";
+      return "ZCode 登录 · Coding Plan 在本机不可用：" + this.zcodeReasonText("coding") +
+        "。测试、列表与保存已禁用，不会改走其它订阅或计费服务商。" + listed +
+        "已保存的 ZCode 配置仍显示于此、不会被改写；请改选 API Key 服务商（GLM / DeepSeek / 同济）。";
+    }
+    zcodeReasonText(plan) {
+      // Fixed reason-code explanations only; unknown backend codes collapse
+      // into a generic sentence instead of echoing arbitrary text.
+      const fixed = {
+        login_route_unavailable: "本插件未实现安全的本机登录直连（不复制本机 ZCode 凭据、不启动无头 CLI 进程，安装版 CLI 也没有无头按模型调用入口）",
+        start_route_not_implemented: "本插件没有可调用的 Start Plan 路由",
+        cli_executable_unavailable: "未找到已安装的 zcode CLI 可执行文件",
+        cli_config_unreadable: "无法读取本机 zcode CLI 配置",
+        provider_absent: "本机 CLI 配置中没有 bigmodel 服务商",
+        provider_config_unsupported: "本机 CLI 的 bigmodel 服务商不是官方登录托管的 Coding Plan 配置（端点或鉴权方式不符）",
+        provider_models_unreadable: "本机 CLI 服务商的模型信息不可读",
+        cli_adapter_unavailable: "随插件发布的运行时不包含 CLI 适配器"
+      };
+      const reason = this.zcodePlans?.[plan]?.reason;
+      return reason && fixed[reason] ? fixed[reason] : "该订阅在本机不可用";
+    }
+    zcodeUnsupportedReason(phase) {
+      if (this.el(phase + "-provider").value.trim().toLowerCase() !== "zcode") return "";
+      if (!this.capabilities.includes("zcode-plans-v1")) {
+        // beta.14 security decision: fail closed against the beta.13 route,
+        // which copied this machine's full ZCode credentials into every
+        // request. Never send legacy zcode requests; the draft stays visible
+        // and editable so the user can migrate to an API-key provider.
+        return "ZCode 登录已停用：本机 bridge 是旧版（beta.13 及更早），其 ZCode 调用会复制本机完整凭据，beta.14 起不再发送此类请求；请更新本机 bridge 后重新连接，或先将该角色改选 API Key 服务商再保存。";
+      }
+      const plan = this.el(phase + "-plan").value === "start" ? "start" : "coding";
+      if (this.zcodePlans?.[plan]?.supported === true) return "";
+      return "ZCode 登录（" + (plan === "start" ? "Start Plan" : "Coding Plan") + "）在本机不可用：" +
+        this.zcodeReasonText(plan) + "；请改选 API Key 服务商";
+    }
+    savedZcodeReason(value = null) {
+      // Fail closed for REQUIRED SAVED zcode roles: the saved login flag is
+      // display-only, never an executable route — on the old bridge the
+      // legacy request would reach the retired beta.13 login route, on the
+      // new bridge every zcode route is unavailable. This reads the SAVED
+      // profile (value or savedConfig), not the unsaved dropdown draft, and
+      // honors translate=false: an unused zh zcode route must not block the
+      // QC-only path.
+      const config = value ? value.config : this.savedConfig;
+      if (!config) return "";
+      for (const role of ["qc", ...(this.el("translate").checked ? ["zh"] : [])]) {
+        const profile = config[role];
+        if (profile?.provider !== "zcode") continue;
+        const label = role === "qc" ? "QC" : "翻译";
+        if (!this.capabilities.includes("zcode-plans-v1")) {
+          return "已保存的" + label + "角色使用 ZCode 登录，本机 bridge 是旧版，该调用路由不可用；" +
+            "请更新本机 bridge 后重新连接，或先将该角色改选 API Key 服务商保存。";
+        }
+        const plan = profile.plan === "start" ? "start" : "coding";
+        if (this.zcodePlans?.[plan]?.supported === true) continue;
+        return "已保存的" + label + "角色使用 ZCode 登录（" + (plan === "start" ? "Start Plan" : "Coding Plan") +
+          "），该调用路由在本机不可用：" + this.zcodeReasonText(plan) + "；请将该角色改选 API Key 服务商保存。";
+      }
+      return "";
+    }
+    presentBundledCatalog(phase) {
+      // Offline snapshot seed for recognized default endpoints. Never cached in
+      // modelCatalogs, never claimed as live, and never covering custom URLs.
+      if (this.closed) return false;
+      const context = this.modelContext(phase);
+      const raw = Bridge.bundledCatalog(context);
+      if (!raw) return false;
+      let choices;
+      try { choices = Bridge.modelChoices(raw, context.provider); }
+      catch (_) { return false; }
+      this.modelOptions[phase] = { ...choices, endpoint: Bridge.endpointSignature(context),
+        epoch: this.keyEpoch[context.provider] || 0, seeded: true };
+      this.pickers[phase + "-model"]?.setOptions(choices.models.map(id => ({ value: id,
+        label: this.client.redact(choices.details[id]?.display_name ? `${choices.details[id].display_name} · API ID: ${id}` : id) })));
+      this.updateEffortOptions(phase);
+      this.text(phase + "-model-notice", "内置官方文档候选（离线快照，不是账号可用清单）；" + choices.models.length +
+        " 项。点击“获取模型列表”联网刷新；刷新失败会保留这些候选。获取时间：未联网。");
+      return true;
+    }
     autoLoadCatalog(phase) {
       // Selecting a provider loads its catalog immediately — but only for the
       // trusted default endpoints and only via the merged, cached request.
       // Custom addresses always need the explicit button and confirmation.
+      // A locally seeded bundled snapshot is not a fetch result: it must not
+      // suppress the async refresh, whose live answer replaces it.
       if (this.closed || !this.connected || this.pathsDirty || this.busy || this.pending) return;
       if (!this.capabilities.includes("model-profiles-v2")) return;
       const context = this.modelContext(phase);
       if (context.provider === "tongji" && !this.capabilities.includes("tongji-api-v1")) return;
-      if (!["glm_standard", "glm_coding_plan", "deepseek", "tongji"].includes(Bridge.endpointKind(context))) return;
+      if (!["glm_standard", "glm_coding_plan", "deepseek", "tongji", "zcode"].includes(Bridge.endpointKind(context))) return;
+      const unsupported = this.zcodeUnsupportedReason(phase);
+      if (unsupported) return;
       const options = this.modelOptions[phase];
-      if (options?.provider === context.provider && options.endpoint === Bridge.endpointSignature(context)) return;
+      if (options?.provider === context.provider && options.endpoint === Bridge.endpointSignature(context)
+          && options.seeded !== true) return;
       void this.catalogAction(phase, false);
     }
     async catalogAction(phase, force) {
@@ -330,17 +513,24 @@ var LibrarySyncPanel = (() => {
         if (this.busy || this.pending) return;
         if (!this.connected || this.pathsDirty) throw new Bridge.SafeError("CONNECT", "请先连接 bridge。");
         if (!this.capabilities.includes("model-profiles-v2")) throw new Bridge.SafeError("CAPABILITY", "请更新空闲的 bridge 后重新连接，新模型参数不能发送给旧服务。");
+        const unsupportedPlan = this.zcodeUnsupportedReason(phase);
+        if (unsupportedPlan) throw new Bridge.SafeError("CAPABILITY", unsupportedPlan);
         let model = Bridge.profile(this.readModel(phase), true);
         if (model.provider === "tongji" && !this.capabilities.includes("tongji-api-v1")) throw new Bridge.SafeError("CAPABILITY", "本机服务尚不支持同济 API，请更新 bridge 后重新连接；尚未发送请求。");
-        const docsOnly = Bridge.publicModelDocs(model);
-        // Official GLM documentation fetching is credential-free. Listings for
-        // any other endpoint follow the existing endpoint confirmation.
-        if (!docsOnly) model = this.confirmEndpoint(phase, model);
-        if (!this.credentials[model.provider] && !docsOnly) throw new Bridge.SafeError("CONFIG", "请先保存所选 provider 的密钥。");
-        const typed = this.el(model.provider + "-key").value;
-        if (typed && typed !== this.loadedKeys[model.provider]) {
-          // A draft key must not be presented as the saved account: save first.
-          throw new Bridge.SafeError("CONFIG", "该服务商 Key 已修改但尚未保存；请先保存 Key 再获取模型目录，目录不代表未保存的草稿凭据。");
+        if (model.provider === "zcode") {
+          // No key exists for the local login; only its presence is checked.
+          if (this.credentials.zcode !== true) throw new Bridge.SafeError("CONFIG", "本机 ZCode 尚未登录 GLM；请打开 ZCode 登录后重试，或改用 API Key 服务商。");
+        } else {
+          const docsOnly = Bridge.publicModelDocs(model);
+          // Official GLM documentation fetching is credential-free. Listings for
+          // any other endpoint follow the existing endpoint confirmation.
+          if (!docsOnly) model = this.confirmEndpoint(phase, model);
+          if (!this.credentials[model.provider] && !docsOnly) throw new Bridge.SafeError("CONFIG", "请先保存所选 provider 的密钥。");
+          const typed = this.el(model.provider + "-key").value;
+          if (typed && typed !== this.loadedKeys[model.provider]) {
+            // A draft key must not be presented as the saved account: save first.
+            throw new Bridge.SafeError("CONFIG", "该服务商 Key 已修改但尚未保存；请先保存 Key 再获取模型目录，目录不代表未保存的草稿凭据。");
+          }
         }
         const identity = this.catalogIdentity(phase);
         const pending = this.catalogPending[phase];
@@ -354,9 +544,15 @@ var LibrarySyncPanel = (() => {
           const stale = this.catalogCacheGet(identity, true);
           if (stale) this.presentModelChoices(phase, stale.choices, "stale"); // Show, then still fetch fresh below.
         }
-        this.text(phase + "-model-notice", force
+        const status = force
           ? "正在获取模型列表；成功后替换当前候选，失败保留现有候选。"
-          : "正在按所选服务商自动获取模型列表（默认可信地址）；失败保留现有候选。");
+          : "正在按所选服务商自动获取模型列表（默认可信地址）；失败保留现有候选。";
+        // An async auto refresh must not erase the provenance of the candidates
+        // still on screen: keep the current source label (bundled offline
+        // snapshot, cache, live listing) and only append the refresh status.
+        const prior = this.el(phase + "-model-notice").textContent;
+        this.text(phase + "-model-notice", !force && this.modelOptions[phase] && prior
+          ? `${prior}（${status}）` : status);
         submitted = true;
         // The token is taken BEFORE the request: a slower, older POST resolving
         // later must not overwrite the record of a newer submission.
@@ -447,15 +643,18 @@ var LibrarySyncPanel = (() => {
       const note = `${cacheNote}${labeled}；${choices.models.length} 项。获取时间：${choices.fetched_at || "未提供"}。` +
         (choices.endpoint_kind ? `端点类型：${choices.endpoint_kind}。` : "") + (choices.reference ? `参考：${choices.reference}` : "");
       this.text(phase + "-model-notice", note);
-      this.text("model-result", `${phase.toUpperCase()}：${note}\n${choices.notice}\n展示名 / 版本名仅供识别，请求使用 API ID。选择已知模型会在本角色草稿填写最高参数，请保存模型配置。候选列表不能代替实际测试。`);
+      this.text("model-result", `${phase.toUpperCase()}：${note}\n${choices.notice}\n展示名 / 版本名仅供识别，请求使用 API ID。选择已知模型会在本角色草稿填写推荐默认参数（thinking 开启、effort=high，无 high 时按文档档位回退；最高参数可点按钮另填），请保存模型配置。候选列表不能代替实际测试。`);
       this.modelResultPhase = phase;
       this.update();
     }
     async init(selected = false) {
+      this.bootStage = "paths";
       const paths = this.host.getPaths();
       this.el("repo").value = paths.repo; this.el("pythonw").value = paths.pythonw;
+      this.bootStage = "pickers";
       this.initPickers();
       this.fillConfig({ configured: false, config: { schema: 1, qc: Bridge.profileDefaults("glm"), zh: Bridge.profileDefaults("glm") }, credentials: this.credentials }, false);
+      this.bootStage = "listeners";
       this.listen("close-panel", "click", () => this.window.close());
       for (const id of ["glm53", "glm-request", "glm-thinking", "glm-params", "deepseek-thinking", "deepseek-request", "deepseek-context"]) {
         this.listen("docs-" + id, "click", () => {
@@ -480,6 +679,19 @@ var LibrarySyncPanel = (() => {
       this.listen("pause", "click", () => this.runAction("pause"));
       this.listen("resume", "click", () => this.runAction("resume"));
       this.listen("resume-finalize", "click", () => this.runAction("resume-finalize"));
+      this.listen("recover-pause", "click", () => this.runAction("recover-pause"));
+      this.listen("diagnosis-close", "click", () => this.closeDiagnosis());
+      this.listen("status-rows", "click", event => {
+        for (let node = event.target; node && node !== this.el("status-rows"); node = node.parentNode) {
+          if (node.diagnosisKey) return this.showDiagnosis(node.diagnosisKey);
+        }
+      });
+      this.listen("diagnosis-remedies", "click", event => {
+        for (let node = event.target; node && node !== this.el("diagnosis-remedies"); node = node.parentNode) {
+          if (node.remedyAction) return this.remedyAction(node.remedyAction, node.remedyMeta || {});
+        }
+      });
+      this.listen("acronym-save", "click", () => this.saveAcronym());
       this.listen("preview-rows", "change", event => this.changeSelection(event.target));
       this.listen("connect", "click", () => this.connect(true));
       this.listen("save-paths", "click", () => this.savePaths());
@@ -518,7 +730,7 @@ var LibrarySyncPanel = (() => {
         this.listen(phase + "-apply-habit", "click", () => this.applyHabitPreset(phase));
         this.listen(phase + "-maximum", "click", () => this.applyModelMaximum(phase));
         this.listen(phase + "-model", "change", () => {
-          this.modelFieldChanged(phase, "model"); this.applyModelMaximum(phase);
+          this.modelFieldChanged(phase, "model"); this.applyModelDefaults(phase);
         });
         this.listen(phase + "-provider", "change", () => this.modelFieldChanged(phase, "provider"));
         for (const field of ["provider", "model", "effort", "thinking", "protocol", "base-url", "models-url", "extra-body", "timeout", "max-tokens"]) {
@@ -550,13 +762,46 @@ var LibrarySyncPanel = (() => {
       this.listen("mineru-key", "input", () => this.update());
       if (selected) this.captureSelection();
       this.update();
+      this.bootStage = "ready";
+      // Explicit handshake: the full settings UI is usable from here on. This
+      // fires BEFORE any bridge/model work, so a missing backend, offline
+      // machine or failed login can never hold the window past the host's
+      // bounded ready timeout.
+      this.signalReady();
       // Initial open is read-only. Only the explicit connect button can launch a service.
       await this.connect(false);
       if (!this.closed) this.timer = this.window.setInterval(() => { void this.tick(); }, 3000);
     }
+    signalReady() {
+      if (this.closed || this.readySignaled) return;
+      this.readySignaled = true;
+      const boot = this.el("panel-boot");
+      if (boot) boot.hidden = true;
+      try { this.host.panelReady?.(this.window); } catch (_) { /* handshake only */ }
+      try {
+        if (typeof this.window.Event === "function" && typeof this.window.dispatchEvent === "function") {
+          this.window.librarySyncReady = true;
+          this.window.dispatchEvent(new this.window.Event("library-sync-ready"));
+        }
+      } catch (_) { /* the host fallback callback already ran */ }
+    }
+    bootFailure(error, stage = this.bootStage) {
+      // Fixed stage labels and SafeError messages only; never exception bodies.
+      if (this.closed) return;
+      const safe = error instanceof Bridge.SafeError || error?.name === "SafeError" ? error.message : "";
+      const text = `面板初始化失败（阶段 ${stage || "unknown"}）。` +
+        (safe || "请关闭本窗口重新打开；若仍失败请重启 Zotero 后重试。已运行的后台任务不受影响。");
+      try {
+        const message = this.el("message");
+        if (message) { message.hidden = false; message.setAttribute("data-error", "true"); message.textContent = this.client.redact(text); }
+        const boot = this.el("panel-boot");
+        if (boot) boot.textContent = "面板初始化失败；本窗口可关闭后重新打开。";
+      } catch (_) { /* the static markup still shows its own guidance */ }
+    }
     invalidate() {
       this.preview = null; this.startResult = null; this.startAttempted = false;
-      this.modelDirty = false;
+      this.modelDirty = false; this.acronymTitles = [];
+      this.el("acronym-section").hidden = true;
       this.selections = []; this.selectionControls = [];
       this.text("operation", "范围或配置已改变，请重新预演");
       this.text("preview-text", "尚无有效预演。请先预演再确认开始。");
@@ -574,7 +819,8 @@ var LibrarySyncPanel = (() => {
       const lockReason = locked ? "请等待本次操作完成" : "";
       const connectionReason = this.pathsDirty ? "路径已修改，请先保存并重新连接" : !this.connected ? "请先连接本机服务" : "";
       const activeReason = this.active ? "已有任务正在运行；修改可留作下次任务草稿" : "";
-      const readyReason = connectionReason || this.requiredTongjiReason() || (!this.configurationReady() ? "请先保存所需模型配置与 Key" : "") ||
+      const readyReason = connectionReason || this.requiredTongjiReason() || this.savedZcodeReason() ||
+        (!this.configurationReady() ? "请先保存所需模型配置与 Key" : "") ||
         (this.configDirty ? "存在未保存修改，请先保存配置" : "") ||
         (this.modelDirty ? "模型配置已修改，保存后需更新预演绑定或重新预演" : "") ||
         (!this.capabilities.includes("translation-policy-v1") ? "请更新服务以支持翻译选项" : "");
@@ -588,6 +834,7 @@ var LibrarySyncPanel = (() => {
       for (const [id, capability] of [["save-config", "model-profiles-v2"], ["save-keys", "keys-v1"], ["save-mineru", "mineru-v1"]]) {
         this.disable(id, lockReason || connectionReason ||
           (id !== "save-config" ? activeReason : "") ||
+          (id === "save-config" && (this.zcodeUnsupportedReason("qc") || this.zcodeUnsupportedReason("zh")) ? "所选 ZCode 登录本机不可用，不能保存无法执行的配置；请将该角色改选 API Key 服务商" : "") ||
           (id !== "save-mineru" && this.tongjiSupportReason(id === "save-keys") || "") ||
           (!this.capabilities.includes(capability) ? "本机服务不支持此设置，请更新服务" : ""));
       }
@@ -603,8 +850,13 @@ var LibrarySyncPanel = (() => {
         (!this.statusKnown ? "当前状态读取未成功，请刷新状态" : "") ||
         (!this.preview ? "请先完成预演" : !count ? "请至少勾选一篇文献" : ""));
       for (const phase of ["qc", "zh"]) {
+        const planCapable = this.capabilities.includes("zcode-plans-v1");
+        const isZcode = this.el(phase + "-provider").value.trim().toLowerCase() === "zcode";
+        this.el(phase + "-plan-row").hidden = !isZcode || !planCapable;
+        this.disable(phase + "-plan", lockReason || (isZcode && !planCapable ? "本机 bridge 不支持订阅选择；旧版 ZCode 调用已停用，请更新 bridge 或改选 API Key 服务商" : ""));
         for (const action of ["test", "models"]) this.disable(phase + "-" + action,
           lockReason || connectionReason || activeReason ||
+          this.zcodeUnsupportedReason(phase) ||
           (this.el(phase + "-provider").value === "tongji" && !this.capabilities.includes("tongji-api-v1") ? "本机服务尚不支持同济 API，请更新 bridge 后重新连接" : "") ||
           (!this.credentials[this.el(phase + "-provider").value] && !(action === "models" && Bridge.publicModelDocs(this.modelContext(phase))) ? "请先保存所选服务商的 Key" : "") ||
           (!this.capabilities.includes("model-profiles-v2") || action === "test" && !this.capabilities.includes("model-test-role-v1") ? "本机服务不支持此模型操作，请更新" : ""));
@@ -613,7 +865,7 @@ var LibrarySyncPanel = (() => {
           (!Bridge.modelMaximum(this.modelContext(phase), this.modelOptions[phase]) ? "尚未核实该模型 / 端点的最高参数，请按文档手填。" : ""));
       }
       for (const id of ["repo", "pythonw", "workers", "chunk-parallel", "limit", "translate", "glm-key", "deepseek-key", "tongji-key", "mineru-key",
-        ...["qc", "zh"].flatMap(p => ["provider", "model", "effort", "thinking", "protocol", "base-url", "models-url", "extra-body", "timeout", "max-tokens", "defaults", "habit"].map(f => p + "-" + f))]) {
+        ...["qc", "zh"].flatMap(p => ["provider", "model", "effort", "thinking", "protocol", "base-url", "models-url", "extra-body", "timeout", "max-tokens", "defaults", "habit", "plan"].map(f => p + "-" + f))]) {
         this.disable(id, lockReason);
       }
       for (const phase of ["qc", "zh"]) this.disable(phase + "-apply-habit", this.habitReason());
@@ -632,11 +884,14 @@ var LibrarySyncPanel = (() => {
       this.el("view-resumed").hidden = typeof resumed !== "string" || !Bridge.RUN_ID.test(resumed);
       this.disable("view-resumed", this.el("view-resumed").hidden ? "暂无已派发的恢复任务" : lockReason || connectionReason);
       this.el("view-resumed-reason").hidden ||= this.el("view-resumed").hidden;
-      for (const action of ["pause", "resume", "resume-finalize"]) this.disable(action, this.runActionReason(action));
+      for (const action of ["pause", "resume", "resume-finalize", "recover-pause"]) this.disable(action, this.runActionReason(action));
       // Legacy receipts may allow finalization without supporting content resume.
       this.el("resume").hidden = !!this.displayedStatus?.view && !this.active &&
         this.displayedStatus.view.can_resume !== true && !this.isPauseRequested() && this.capabilities.includes("pause-resume-v1");
       this.el("resume-reason").hidden ||= this.el("resume").hidden;
+      const canRecover = this.displayedStatus?.view?.can_recover_pause === true;
+      this.el("recover-pause").hidden = !canRecover && !this.isLegacyPauseRequested();
+      this.el("recover-pause-reason").hidden ||= this.el("recover-pause").hidden;
       for (const control of this.selectionControls) {
         control.disabled = locked || this.startAttempted || control.unavailable ||
           control.selectionField === "translate" && !this.selections.find(row => row.key === control.selectionKey)?.include;
@@ -713,7 +968,7 @@ var LibrarySyncPanel = (() => {
         this.invalidate(); this.fillConfig({ configured: false, config: { schema: 1, qc: Bridge.profileDefaults("glm"), zh: Bridge.profileDefaults("glm") }, credentials: { glm: false, deepseek: false, tongji: false } }, false);
         this.text("connection", "路径已保存，请连接服务"); this.text("status-text", "尚未读取新目录的状态。");
         this.text("summary", "尚未读取状态"); this.text("report-path", this.reportHint());
-        this.el("status-rows").replaceChildren(); this.message("已保存 Repo 与 Pythonw 两个路径。");
+        this.el("status-rows").replaceChildren(); this.closeDiagnosis(); this.message("已保存 Repo 与 Pythonw 两个路径。");
       });
     }
     captureSelection() {
@@ -735,11 +990,15 @@ var LibrarySyncPanel = (() => {
       if (schoolReason) throw new Bridge.SafeError("CAPABILITY", schoolReason);
       if (!this.capabilities.includes("translation-policy-v1")) throw new Bridge.SafeError("CAPABILITY", "本机 bridge 仍是旧版；请更新服务再预演，不能忽略本次翻译选项。");
       if (this.el("refresh-source").checked && !this.capabilities.includes("source-refresh-v1")) throw new Bridge.SafeError("CAPABILITY", "本机 bridge 不支持更换全文 PDF，请更新 bridge 后重新连接；尚未发送更换请求。");
+      const zcodeReason = this.savedZcodeReason();
+      if (zcodeReason) throw new Bridge.SafeError("CAPABILITY", zcodeReason);
       if (!this.configurationReady() || this.configDirty) throw new Bridge.SafeError("CONFIG", "请先保存所需模型配置与 Key；运行状态仍可查看。");
     }
     configurationReady(value = null) {
       const config = value ? value.config : this.savedConfig, credentials = value ? value.credentials : this.credentials;
-      return !!config && ["qc", ...(this.el("translate").checked ? ["zh"] : [])].every(
+      // A saved zcode login flag is not an executable route: required saved
+      // zcode roles fail closed here even though the credential exists.
+      return !!config && !this.savedZcodeReason(value) && ["qc", ...(this.el("translate").checked ? ["zh"] : [])].every(
         role => !!config[role]?.model && !!credentials[config[role]?.provider]);
     }
     requiredTongjiReason(value = null) {
@@ -789,6 +1048,22 @@ var LibrarySyncPanel = (() => {
             const value = await this.client.getStatus(selected);
             if (!this.closed && epoch === this.epoch && viewEpoch === this.viewEpoch) this.displayStatus(value, true);
           } catch (e) { if (!this.closed && epoch === this.epoch && viewEpoch === this.viewEpoch) this.statusError(e, true); }
+        }
+        if (this.closed || epoch !== this.epoch || !this.connected) return;
+        // A bundled offline seed shown at open (or after an endpoint edit) is
+        // not a fetch result: recognized credential-free GLM doc endpoints
+        // auto-refresh asynchronously on the next poll instead of requiring
+        // the manual button. Keyed listings keep their explicit button.
+        for (const phase of ["qc", "zh"]) {
+          const options = this.modelOptions[phase];
+          if (options?.seeded !== true || options.seedRefreshed) continue;
+          const context = this.modelContext(phase);
+          if (!this.busy && !this.pending && this.connected && !this.pathsDirty
+              && this.capabilities.includes("model-profiles-v2")
+              && Bridge.publicModelDocs(context)) {
+            this.modelOptions[phase] = { ...options, seedRefreshed: true };
+            this.autoLoadCatalog(phase);
+          }
         }
         if (this.closed || epoch !== this.epoch || !this.connected) return;
         if (this.pending) {
@@ -899,17 +1174,16 @@ var LibrarySyncPanel = (() => {
         this.text("summary", (v.status_text || v.status || "状态未知") + " · 任务 " + (v.id || "—") + " · " + (v.phase_label || v.phase || "—") +
           " · 总耗时 " + duration(v.elapsed_seconds) + " · 阶段 " + duration(v.phase_elapsed_seconds) + " · 验收 " + (v.accepted ?? "—") + "/" + (v.total ?? "—") +
           " · 索引 " + (v.index_status || "—") + " · Git " + (v.git_status || "—"));
-        this.rows("status-rows", (Array.isArray(v.papers) ? v.papers : []).map(p => [
-          p.citekey || p.key, p.title, p.phase_label || p.phase, duration(p.phase_elapsed_seconds ?? p.elapsed_seconds),
-          (p.accepted === true ? "已验收" : "未验收") + (p.note ? " · " + p.note : "")
-        ]));
+        this.renderStatusRows(Array.isArray(v.papers) ? v.papers : []);
         const notices = Array.isArray(v.notices) ? v.notices.filter(x => typeof x === "string") : [];
         if (typeof v.resumed_as === "string" && Bridge.RUN_ID.test(v.resumed_as)) notices.unshift("此任务已派发恢复：" + v.resumed_as + "。请查看恢复任务。");
         if (this.isPauseRequested(v)) notices.unshift("已请求暂停，正在等待安全边界；可能需等整篇 QC / 翻译步骤结束。尚未确认可关机。");
         else if (v.status === "paused") notices.unshift(this.active && history
           ? "此历史任务已暂停；另有控制器正在运行，尚不可据此关机。" : v.safe_to_shutdown === true && v.owner_alive !== true
           ? "已安全暂停，后台已确认可以关机；可继续未完成步骤。" : "任务已暂停；尚未收到可关机确认。");
-        if (["failed", "partial", "interrupted", "blocked", "attention"].includes(v.status)) {
+        if (v.status === "interrupted" && !v.can_resume && !v.can_resume_finalize) {
+          notices.unshift("如需继续，可先保存下次使用的模型，再到“同步”页选择原条目并预演，或点击“检测新增”。核对范围后确认，已有产物会按步骤复核。");
+        } else if (["failed", "partial", "interrupted", "blocked", "attention"].includes(v.status)) {
           // State the controller's own error when the service provides it, so
           // blocked runs show an actionable reason instead of only a report path.
           const reason = typeof v.error === "string" && v.error.trim() ? v.error.trim() : "";
@@ -921,7 +1195,9 @@ var LibrarySyncPanel = (() => {
         this.text("task-notice", notices.join("\n"));
         const profiles = ["qc", "zh"].map(role => {
           const p = v.model_config?.[role];
-          return p ? role.toUpperCase() + ": " + [p.provider, p.model, "effort=" + p.reasoning_effort,
+          return p ? role.toUpperCase() + ": " + [p.provider, p.model,
+            ...(p.provider === "zcode" && p.plan ? ["plan=" + p.plan] : []),
+            "effort=" + p.reasoning_effort,
             "thinking=" + (p.thinking ?? "default"), "timeout=" + p.timeout, "max_tokens=" + p.max_tokens,
             "protocol=" + (p.protocol || "默认"), "base_url=" + (p.base_url || "默认")].join(" · ") : role.toUpperCase() + ": 未提供冻结配置";
         });
@@ -947,8 +1223,227 @@ var LibrarySyncPanel = (() => {
       this.rowSignatures.set(id, signature);
       if (scroll) { scroll.scrollTop = top; scroll.scrollLeft = left; }
     }
+    renderStatusRows(papers) {
+      // Like rows(), plus one accessible per-paper "详情" action. The signature
+      // covers identity/phase/acceptance so identical refreshes rebuild nothing.
+      const target = this.el("status-rows");
+      const signature = this.client.redact(JSON.stringify(papers.map(p =>
+        [p.key, p.citekey, p.title, p.phase, p.accepted, p.note])));
+      if (this.rowSignatures.get("status-rows") === signature || this.hasSelection(target)) return;
+      const scroll = target.parentNode?.parentNode;
+      const top = scroll?.scrollTop, left = scroll?.scrollLeft;
+      target.replaceChildren();
+      for (const p of papers) {
+        const tr = this.doc.createElementNS(htmlNS, "tr");
+        for (const value of [p.citekey || p.key, p.title, p.phase_label || p.phase,
+          duration(p.phase_elapsed_seconds ?? p.elapsed_seconds),
+          (p.accepted === true ? "已验收" : "未验收") + (p.note ? " · " + p.note : "")]) {
+          const td = this.doc.createElementNS(htmlNS, "td");
+          td.textContent = this.client.redact(value ?? "—"); tr.appendChild(td);
+        }
+        const cell = this.doc.createElementNS(htmlNS, "td");
+        const button = this.doc.createElementNS(htmlNS, "button");
+        button.type = "button";
+        const key = typeof p.key === "string" && Bridge.ITEM_KEY.test(p.key) ? p.key : "";
+        button.diagnosisKey = key;
+        button.textContent = "详情";
+        button.setAttribute("aria-label", "查看诊断 " + this.client.redact(p.citekey || p.key || ""));
+        if (!key) { button.disabled = true; button.setAttribute("title", "该行没有可诊断的条目 key"); }
+        cell.appendChild(button); tr.appendChild(cell);
+        target.appendChild(tr);
+      }
+      this.rowSignatures.set("status-rows", signature);
+      if (scroll) { scroll.scrollTop = top; scroll.scrollLeft = left; }
+    }
+    closeDiagnosis() {
+      if (this.closed) return;
+      this.diagnosis = null;
+      this.el("diagnosis-section").hidden = true;
+      this.text("diagnosis-text", "尚未选择文献。");
+      this.el("diagnosis-remedies").replaceChildren();
+      this.text("diagnosis-result", "");
+    }
+    diagnosisReason() {
+      if (this.busy || this.pending || this.remedyBusy) return "请等待本次操作完成";
+      if (!this.connected || this.pathsDirty) return "请先连接本机服务";
+      if (!this.capabilities.includes("diagnosis-v1")) return "本机 bridge 不支持单篇诊断；请更新后台程序后重新连接";
+      if (this.active) return "任务运行中暂不诊断；可先查看报告或暂停任务";
+      return "";
+    }
+    async awaitOperation(id, label, timeoutMs = 240000) {
+      // Bounded in-action polling for remedy/resume-preview operations; a late
+      // answer after this controller closed is dropped by the closed checks.
+      const started = Date.now();
+      while (!this.closed) {
+        const result = await this.client.operation(id);
+        if (result.status !== "running") return result;
+        if (Date.now() - started > timeoutMs) throw new Bridge.SafeError("OPERATION", `${label}超时；后台可能仍在执行，请稍后刷新诊断。`);
+        await new Promise(resolve => this.window.setTimeout(resolve, 1500));
+      }
+      throw new Bridge.SafeError("CLOSED", "面板已关闭。");
+    }
+    showDiagnosis(key) {
+      if (this.closed) return;
+      const reason = this.diagnosisReason();
+      if (reason) { this.message(reason, true); return; }
+      const runId = this.displayedStatus?.view?.id;
+      if (!runId || !Bridge.RUN_ID.test(runId)) { this.message("尚未选定可诊断的任务。", true); return; }
+      return this.action(async () => {
+        const value = await this.client.diagnosis(runId, key);
+        if (this.closed) return;
+        this.diagnosis = value;
+        this.renderDiagnosis();
+        this.el("diagnosis-section").hidden = false;
+        this.el("diagnosis-title").focus({ preventScroll: true });
+      });
+    }
+    renderDiagnosis() {
+      const value = this.diagnosis;
+      if (!value) return;
+      const lines = [`文献 ${value.citekey || value.key}（${value.key}）· ${
+        value.accepted ? "已验收" : "未验收"}${
+        value.exit_code !== undefined && value.exit_code !== null ? ` · 退出码 ${value.exit_code}` : ""}`];
+      for (const row of value.classification || []) {
+        lines.push(`原因分类：${row.label}`);
+        for (const item of (row.evidence || []).slice(0, 6)) {
+          lines.push(`  - ${item.code ? "[" + item.code + "] " : ""}${item.message}` +
+            (item.file ? `（文件 ${item.file}${item.unit !== undefined ? "，单元 " + item.unit : ""}）` : ""));
+        }
+      }
+      if (value.qa && Array.isArray(value.qa.errors) && value.qa.errors.length) {
+        lines.push("验收错误（前 12 条）：");
+        for (const e of value.qa.errors.slice(0, 12)) lines.push(`  - [${e.code}] ${e.message}` + (e.file ? `（${e.file}）` : ""));
+      }
+      const files = (value.artifacts && value.artifacts.files) || [];
+      lines.push("现有产物：" + (files.length ? files.join("、") + (value.artifacts.qc_marked ? "（原文带 QC 标记）" : "（原文无 QC 标记）") : "无"));
+      if (value.ledger) lines.push(`问题台账：${value.ledger.status ?? "—"}（处置记录 ${value.ledger.dispositions ?? 0} 条，更新于 ${value.ledger.updated ?? "—"}）`);
+      if (value.paths) {
+        lines.push("报告路径：" + (value.paths.report || "—"));
+        if (value.paths.paper_folder) lines.push("论文目录：" + value.paths.paper_folder);
+      }
+      lines.push("最近一次尝试：" + [value.latest_attempt?.run_id, value.latest_attempt?.action,
+        value.latest_attempt?.status, value.latest_attempt?.exit_code,
+        value.latest_attempt?.finished].filter(x => x !== undefined && x !== null).join(" · "));
+      if (value.latest_attempt?.error) lines.push("最近处置失败原因：" + value.latest_attempt.error);
+      if (value.latest_attempt?.result?.message) lines.push("最近处置结果：" + value.latest_attempt.result.message);
+      if (value.log_tail) lines.push("日志尾部（脱敏、截断）：\n" + value.log_tail);
+      this.text("diagnosis-text", lines.join("\n"));
+      const box = this.el("diagnosis-remedies");
+      box.replaceChildren();
+      for (const remedy of value.remedies || []) {
+        if (remedy.kind === "instruction") continue; // guidance text only, no fake retry button
+        const button = this.doc.createElementNS(htmlNS, "button");
+        button.type = "button";
+        button.textContent = this.client.redact(remedy.label);
+        button.setAttribute("aria-label", this.client.redact(remedy.label));
+        button.remedyAction = remedy.id;
+        button.remedyMeta = remedy;
+        if (remedy.available !== true) {
+          button.disabled = true;
+          button.setAttribute("title", this.client.redact(remedy.reason || "当前不可用"));
+        }
+        box.appendChild(button);
+      }
+      const uriButton = this.doc.createElementNS(htmlNS, "button");
+      uriButton.type = "button"; uriButton.textContent = "在 Zotero 中打开";
+      uriButton.remedyAction = "__open_zotero";
+      uriButton.remedyMeta = {};
+      const copyButton = this.doc.createElementNS(htmlNS, "button");
+      copyButton.type = "button"; copyButton.textContent = "复制本篇诊断";
+      copyButton.remedyAction = "__copy";
+      copyButton.remedyMeta = {};
+      box.appendChild(uriButton); box.appendChild(copyButton);
+      this.text("diagnosis-result", "");
+      const instructions = (value.remedies || []).filter(r => r.kind === "instruction");
+      if (instructions.length) this.text("diagnosis-result", "需人工处理的事项：\n" +
+        instructions.map(r => "- " + r.label).join("\n"));
+    }
+    remedyAction(action, meta) {
+      if (this.closed) return;
+      if (action === "__open_zotero") {
+        const key = this.diagnosis?.key;
+        if (!key) return;
+        try {
+          if (typeof this.host.openZoteroItem === "function") {
+            this.host.openZoteroItem(key);
+          } else {
+            this.host.copyText?.("zotero://select/library/items/" + key);
+            this.message("宿主不支持直接打开；已复制 Zotero 条目链接。");
+          }
+        } catch (_) { this.message("无法在 Zotero 中打开该条目；请手动选择。", true); }
+        return;
+      }
+      if (action === "__copy") {
+        const text = this.el("diagnosis-text").textContent;
+        const copied = (() => { try { return this.host.copyText?.(text) === true; } catch (_) { return false; } })();
+        this.message(copied ? "已复制脱敏诊断。" : "复制失败：请手动选中诊断文本复制。", !copied);
+        return;
+      }
+      const reason = this.diagnosisReason();
+      if (reason) { this.message(reason, true); return; }
+      if (!this.capabilities.includes("remedy-v1")) { this.message("本机 bridge 不支持处置动作；请更新后台程序。", true); return; }
+      if (!this.diagnosis) return;
+      const runId = this.diagnosis.run_id, key = this.diagnosis.key;
+      return this.action(async () => {
+        this.remedyBusy = true;
+        try {
+          const previewId = await this.client.remedySubmit(runId, key, action);
+          if (this.closed) return;
+          const preview = await this.awaitOperation(previewId, "处置预览");
+          if (this.closed) return;
+          if (preview.status === "failed") throw new Bridge.SafeError("OPERATION", "预览失败：" + this.client.redact(preview.error || "请查看状态。"));
+          const result = preview.result || {};
+          const token = typeof result.token === "string" ? result.token : "";
+          if (!token) throw new Bridge.SafeError("PROTOCOL", "预览未返回一次性令牌；未执行任何动作，请重试预览。");
+          const params = {};
+          const confirmLines = [`对 ${this.diagnosis.citekey || key} 执行「${action}」？`, "预览：",
+            JSON.stringify({ ...result, token: "[已隐藏]" }, null, 2).slice(0, 4000)];
+          if (Array.isArray(result.user_edit_conflicts) && result.user_edit_conflicts.length) {
+            if (!this.window.confirm("检测到疑似你的手动修改：\n" + result.user_edit_conflicts.join("\n") +
+              "\n\n确定要用流水线候选替换这些修改吗？（原字节会先备份）")) return;
+            params.overwrite = "user_edited_confirmed";
+          }
+          if (action === "reparse_source") {
+            if (!this.window.confirm("全新解析会对 PDF 重新跑 MinerU（费用高、耗时）。\n确认继续？")) return;
+            params.explicit_fresh_parse = true;
+          }
+          if (!this.window.confirm(confirmLines.join("\n") + "\n\n确认执行？")) return;
+          const applyId = await this.client.remedySubmit(runId, key, action, { confirm: true, params, token });
+          if (this.closed) return;
+          const applied = await this.awaitOperation(applyId, "处置执行", 600000);
+          if (this.closed) return;
+          const text = applied.status === "failed"
+            ? "处置失败：" + this.client.redact(applied.error || "请查看任务报告。")
+            : "处置结果：" + this.client.redact(JSON.stringify(applied.result, null, 2)).slice(0, 6000);
+          this.text("diagnosis-result", text);
+          this.message(applied.status === "failed" ? "处置失败；详情见诊断区。" : "处置完成；详情见诊断区。", applied.status === "failed");
+          // Refresh the diagnosis view so statuses/remedies move with reality.
+          const fresh = await this.client.diagnosis(runId, key);
+          if (!this.closed) { this.diagnosis = fresh; this.renderDiagnosis(); this.text("diagnosis-result", text); }
+        } finally { this.remedyBusy = false; }
+      });
+    }
+    async saveAcronym() {
+      if (this.closed || this.busy) return;
+      if (!this.connected || this.pathsDirty) { this.message("请先连接本机服务。", true); return; }
+      if (!this.capabilities.includes("acronyms-v1")) { this.message("本机 bridge 不支持保存期刊缩写；请更新后台程序。", true); return; }
+      const title = this.el("acronym-title").value.trim();
+      const proposed = this.el("acronym-proposed").value.trim();
+      if (!title || !proposed) { this.message("请填写刊名与缩写。", true); return; }
+      try {
+        this.busy = true; this.update();
+        const result = await this.client.saveAcronym(title, proposed);
+        this.message(result.message || "期刊缩写已保存。");
+        this.el("acronym-proposed").value = "";
+        this.acronymTitles = this.acronymTitles.filter(x => x !== title);
+        if (this.acronymTitles.length) this.el("acronym-title").value = this.acronymTitles[0];
+        else { this.el("acronym-section").hidden = true; }
+      } catch (e) { this.error(e); }
+      finally { this.busy = false; this.update(); }
+    }
     showCurrentTask() {
-      this.selectedRun = null; this.viewEpoch++; const reading = this.showPage("task");
+      this.selectedRun = null; this.viewEpoch++; this.closeDiagnosis();
+      const reading = this.showPage("task");
       if (this.currentStatus) this.displayStatus(this.currentStatus, false);
       this.el("status-title").focus({ preventScroll: true });
       return reading;
@@ -998,12 +1493,21 @@ var LibrarySyncPanel = (() => {
         try { status = await this.client.getStatus(runId); }
         catch (e) { this.statusError(e, true, runId); throw e; }
         if (this.closed || epoch !== this.epoch || viewEpoch !== this.viewEpoch) return;
-        this.selectedRun = runId; this.showPage("task"); this.displayStatus(status, true);
+        this.selectedRun = runId; this.showPage("task"); this.closeDiagnosis(); this.displayStatus(status, true);
       });
     }
     isPauseRequested(v = this.displayedStatus?.view) {
       return !!v && v.status !== "paused" && v.terminal !== true &&
         (v.pause_requested === true || v.status === "pause_requested" || v.id === this.pauseRun);
+    }
+    isLegacyPauseRequested(v = this.displayedStatus?.view) {
+      return !!v && v.status === "blocked" && v.pause_requested === true && v.can_resume !== true &&
+        v.terminal === true && this.capabilities.includes("pause-recovery-v1");
+    }
+    modelConfigLine(profile) {
+      if (!profile) return "未提供";
+      return `${profile.provider} / ${profile.model}，effort=${profile.reasoning_effort}` +
+        (profile.provider === "zcode" && profile.plan ? `，plan=${profile.plan}` : "");
     }
     actionExplanation(action, v) {
       const key = action === "resume-finalize" ? "resume_finalize" : action;
@@ -1013,8 +1517,20 @@ var LibrarySyncPanel = (() => {
     }
     runActionReason(action, ignoreBusy = false) {
       const v = this.displayedStatus?.view;
-      if ((!ignoreBusy && this.busy) || this.pending) return "请等待本次操作完成";
+      if ((!ignoreBusy && this.busy) || this.pending || this.remedyBusy) return "请等待本次操作完成";
       if (!this.connected || this.pathsDirty) return "请先连接本机服务";
+      if (action === "recover-pause") {
+        if (!this.capabilities.includes("pause-recovery-v1")) return "后台组件版本旧；请更新后台程序（仅更新 XPI 不含 Python 变更）后重新连接";
+        if (!this.statusKnown || !this.viewKnown) return "状态尚未核实，请刷新状态";
+        if (!v?.id) return "暂无可操作任务";
+        if (this.resumePending) return "恢复请求已提交，请刷新确认后台状态";
+        if (v.resumed_as) return "此任务已派发过恢复，请查看恢复任务";
+        if (this.active) return "已有任务正在运行，请等待或暂停当前任务";
+        if (v.can_recover_pause === true) return "";
+        if (this.isLegacyPauseRequested(v)) return this.actionExplanation("resume", v) ||
+          "该任务缺少可核验的暂停凭据或已不满足恢复条件；请查看报告或重新预演这些文献";
+        return "当前任务不在遗留暂停恢复范围";
+      }
       if (!this.capabilities.includes("pause-resume-v1")) return "后台组件版本旧；关闭面板，待服务闲置 30 分钟退出后重连，或待任务结束后重启电脑再连接。";
       if (!this.statusKnown || !this.viewKnown) return "状态尚未核实，请刷新状态";
       if (!v?.id) return "暂无可操作任务";
@@ -1034,6 +1550,25 @@ var LibrarySyncPanel = (() => {
       }
       return "";
     }
+    async modelChoicePreview(runId, recovery) {
+      // Explicit frozen-old vs selected-new model preview before any resume.
+      const id = await this.client.resumePreview(runId, recovery);
+      const result = await this.awaitOperation(id, "恢复预览", 240000);
+      if (result.status === "failed") throw new Bridge.SafeError("OPERATION",
+        "恢复预览失败：" + this.client.redact(result.error || "请查看任务报告。"));
+      return result.result || {};
+    }
+    formatResumePreview(preview) {
+      const steps = Object.entries(preview.steps || {}).map(([key, list]) =>
+        `${key}: ${Array.isArray(list) && list.length ? list.join(",") : "（无需补步骤）"}`);
+      const needs = Object.entries(preview.needs_action || {}).map(([key, reasons]) =>
+        `${key}: ${(Array.isArray(reasons) ? reasons : []).join("；")}`);
+      const frozen = this.modelConfigLine(preview.frozen_model_config?.qc) + " / " + this.modelConfigLine(preview.frozen_model_config?.zh);
+      const saved = preview.saved_model_ok
+        ? this.modelConfigLine(preview.saved_model_config?.qc) + " / " + this.modelConfigLine(preview.saved_model_config?.zh)
+        : "不可用：" + (preview.saved_model_error || "未配置");
+      return { steps, needs, frozen, saved };
+    }
     runAction(action) {
       const reason = this.runActionReason(action);
       if (reason) { this.message(reason, true); return; }
@@ -1047,26 +1582,98 @@ var LibrarySyncPanel = (() => {
         this.displayStatus(detail, historical);
         const blocked = this.runActionReason(action, true);
         if (blocked) throw new Bridge.SafeError("INPUT", blocked);
-        const label = action === "pause" ? "完成当前步骤后暂停（可能包括整篇 QC / 翻译）；不终止进程"
-          : action === "resume-finalize" ? "仅重试尚未完成的收尾步骤" : "校验恢复记录并继续未完成步骤，使用原任务冻结配置";
-        if (!this.window.confirm(label + "？\n任务 " + runId) || this.closed) return;
         if (action === "pause") {
+          const label = "完成当前步骤后暂停（可能包括整篇 QC / 翻译）；不终止进程";
+          if (!this.window.confirm(label + "？\n任务 " + runId) || this.closed) return;
           const result = await this.client.pause(runId);
           if (this.closed) return;
           this.pauseRun = result.status === "pause_requested" ? runId : null;
           this.displayStatus({ ...detail, view: { ...detail.view, status: result.status,
             pause_requested: result.status === "pause_requested", can_pause: false, safe_to_shutdown: false } }, historical);
           this.message(result.message);
-        } else {
-          const result = await this.client.resume(runId, action === "resume-finalize");
+          this.renderStatus(await this.client.getStatus());
+          return;
+        }
+        if (action === "recover-pause") {
+          let preview = null;
+          if (this.capabilities.includes("resume-model-choice-v1")) {
+            try { preview = await this.modelChoicePreview(runId, true); }
+            catch (e) { this.message("恢复预览读取失败，按保守方式继续确认。" , true); }
+          }
+          const lines = ["将以证据核验方式恢复这个遗留暂停任务（只读核验后启动新的子任务；原记录不改动）。\n任务 " + runId];
+          if (preview) {
+            const view = this.formatResumePreview(preview);
+            lines.push("待补步骤：\n  " + (view.steps.join("\n  ") || "无"),
+              "待处理（不会自动重跑）：\n  " + (view.needs.join("\n  ") || "无"),
+              "原任务冻结模型：" + view.frozen, "当前已保存模型：" + view.saved);
+          }
+          if (!this.window.confirm(lines.join("\n") + "\n\n确认恢复？") || this.closed) return;
+          let useSaved = false;
+          if (preview && preview.saved_model_ok &&
+              JSON.stringify(preview.frozen_model_config) !== JSON.stringify(preview.saved_model_config)) {
+            useSaved = this.window.confirm("检测到当前已保存的模型配置与原任务冻结配置不同。\n" +
+              "确定本次恢复的后续步骤改用当前已保存的配置吗？（取消则沿用原任务冻结配置）");
+          }
+          const result = await this.client.recover(runId, useSaved);
           if (this.closed) return;
           this.resumePending = result.run_id; this.startResult = result; this.showCurrentTask();
-          const label = result.already_submitted ? "已关联先前派发的恢复任务："
-            : result.joined ? result.resume_of ? "已关联恢复任务：" : "已有任务正在运行，已关联：" : "恢复请求已提交：";
-          this.message(label + result.run_id + "；请查看后台进度与验收结果。", false, result.run_id);
+          this.message("遗留恢复已提交：" + result.run_id + "；请查看后台进度与验收结果。", false, result.run_id);
+          this.renderStatus(await this.client.getStatus());
+          return;
         }
+        // resume / resume-finalize
+        let useSaved = false;
+        if (action === "resume" && this.capabilities.includes("resume-model-choice-v1")) {
+          let preview = null;
+          try { preview = await this.modelChoicePreview(runId, false); }
+          catch (e) { this.error(e); throw e; }
+          if (this.closed || viewEpoch !== this.viewEpoch) return;
+          const view = this.formatResumePreview(preview);
+          const label = "校验恢复记录并继续未完成步骤，使用原任务冻结配置";
+          const ok = this.window.confirm(
+            label + "？\n任务 " + runId +
+            "\n待补步骤：\n  " + (view.steps.join("\n  ") || "无") +
+            "\n待处理（不会自动重跑）：\n  " + (view.needs.join("\n  ") || "无") +
+            "\n原任务冻结模型：" + view.frozen +
+            "\n当前已保存模型：" + view.saved);
+          if (!ok || this.closed) return;
+          if (preview.saved_model_ok &&
+              JSON.stringify(preview.frozen_model_config) !== JSON.stringify(preview.saved_model_config)) {
+            useSaved = this.window.confirm("是否把本次恢复的后续步骤改用当前已保存的模型配置？\n" +
+              "已保存：" + view.saved + "\n冻结：" + view.frozen +
+              "\n（取消则沿用原任务冻结配置；已完成阶段不会重跑）");
+          }
+        } else {
+          const label = action === "resume-finalize" ? "仅重试尚未完成的收尾步骤" : "校验恢复记录并继续未完成步骤，使用原任务冻结配置";
+          if (!this.window.confirm(label + "？\n任务 " + runId) || this.closed) return;
+        }
+        const result = await this.client.resume(runId, action === "resume-finalize", useSaved);
+        if (this.closed) return;
+        this.resumePending = result.run_id; this.startResult = result; this.showCurrentTask();
+        const text = result.already_submitted ? "已关联先前派发的恢复任务："
+          : result.joined ? result.resume_of ? "已关联恢复任务：" : "已有任务正在运行，已关联：" : "恢复请求已提交：";
+        this.message(text + result.run_id + "；请查看后台进度与验收结果。", false, result.run_id);
         this.renderStatus(await this.client.getStatus());
       });
+    }
+    renderAcronymSection(preview) {
+      // Unknown journals surfaced by THIS preview get a journal-specific
+      // edit/save box (base table + user overrides); saving then re-previewing
+      // applies the mapping through the ordinary intake authorization path.
+      const titles = [...new Set([...(preview.items || []), ...(preview.deferred || [])]
+        .map(p => typeof p?.unmapped_publication_title === "string" ? p.unmapped_publication_title : "")
+        .filter(Boolean))];
+      this.acronymTitles = titles;
+      const section = this.el("acronym-section");
+      const show = titles.length > 0 && this.connected && this.capabilities.includes("acronyms-v1");
+      section.hidden = !show;
+      if (show) {
+        this.el("acronym-title").value = titles[0];
+        this.el("acronym-proposed").value = "";
+        this.text("acronym-notice", `预演发现 ${titles.length} 个未映射刊名（${titles.join("；").slice(0, 300)}）。`
+          + "随包基础表已覆盖常见海洋/地学期刊；此处补充你自己的映射（保存到个人覆盖表，优先于基础表），保存后请重新预演。"
+          + "缩写是文件名/引用键短码，不是 ISO 4 缩写；新映射仍会经过键/附件授权核验。");
+      }
     }
     previewCounts(preview = this.preview) {
       // Single read-only, key-deduplicated summary source. Items still carrying
@@ -1109,6 +1716,7 @@ var LibrarySyncPanel = (() => {
         throw new Bridge.SafeError("PROTOCOL", "预演须包含唯一 Zotero item key；不能用临时 citekey 作为文献身份。");
       }
       this.text("preview-text", result.text);
+      this.renderAcronymSection(result);
       this.renderSelections();
       const counts = this.previewCounts(result);
       this.text("operation", `预演完成 · ${result.preview_id} · 发现 ${counts.discovered} 篇 · 可执行 ${counts.ready} 篇 · 暂缓 ${counts.deferredCount} 篇`);
@@ -1227,6 +1835,10 @@ var LibrarySyncPanel = (() => {
         if (this.closed) return;
         const schoolReason = this.requiredTongjiReason(current);
         if (schoolReason) throw new Bridge.SafeError("CAPABILITY", schoolReason);
+        // The irreversible confirmation re-reads the server config: a saved
+        // required zcode route fails closed here too, before any POST.
+        const savedZcodeReason = this.savedZcodeReason(current);
+        if (savedZcodeReason) { this.fillConfig(current); throw new Bridge.SafeError("CAPABILITY", savedZcodeReason); }
         if (!this.configurationReady(current)) { this.fillConfig(current); throw new Bridge.SafeError("CONFIG", "服务尚未完整配置，不能开始同步。"); }
         if (this.active && !this.startAttempted) throw new Bridge.SafeError("ACTIVE", "已有任务运行，请查看状态。");
         const counts = this.previewCounts(this.preview);
@@ -1234,7 +1846,7 @@ var LibrarySyncPanel = (() => {
         const roles = ["qc", ...(selections.some(p => p.include && p.translate) ? ["zh"] : [])];
         const modelLines = roles.map(role => {
           const p = current.config?.[role];
-          return role.toUpperCase() + ": " + (p ? `${p.provider} / ${p.model}，effort=${p.reasoning_effort}` : "未提供");
+          return role.toUpperCase() + ": " + (p ? `${p.provider} / ${p.model}${p.plan ? "，订阅=" + p.plan : ""}，effort=${p.reasoning_effort}` : "未提供");
         }).join("；");
         const itemOf = key => this.preview.items.find(p => p.key === key) || {};
         const choiceOf = key => selections.find(row => row.key === key);
@@ -1255,28 +1867,65 @@ var LibrarySyncPanel = (() => {
       let extra;
       try { extra = JSON.parse(this.el(`${phase}-extra-body`).value || "{}"); }
       catch (_) { throw new Bridge.SafeError("INPUT", `${phase.toUpperCase()} 附加参数必须是有效 JSON 对象。`); }
-      return { provider: this.el(`${phase}-provider`).value.trim().toLowerCase(), model: this.el(`${phase}-model`).value,
+      const provider = this.el(`${phase}-provider`).value.trim().toLowerCase();
+      const base = { provider, model: this.el(`${phase}-model`).value,
         reasoning_effort: this.el(`${phase}-effort`).value,
+        timeout: Number(this.el(`${phase}-timeout`).value), max_tokens: Number(this.el(`${phase}-max-tokens`).value) };
+      // The zcode login has no endpoint URL, protocol or extra body; its plan
+      // (explicit subscription route) only exists on plan-aware bridges, so an
+      // old bridge keeps receiving the legacy body it can still validate.
+      if (provider === "zcode") return this.capabilities.includes("zcode-plans-v1")
+        ? { ...base, plan: this.el(`${phase}-plan`).value === "start" ? "start" : "coding" } : base;
+      return { ...base,
         thinking: this.el(`${phase}-thinking`).value, protocol: this.el(`${phase}-protocol`).value,
         base_url: this.el(`${phase}-base-url`).value.trim().replace(/\/+$/, ""), models_url: this.el(`${phase}-models-url`).value.trim(),
-        extra_body: extra, endpoint_confirmed: this.endpointConfirmed[phase],
-        timeout: Number(this.el(`${phase}-timeout`).value), max_tokens: Number(this.el(`${phase}-max-tokens`).value) };
+        extra_body: extra, endpoint_confirmed: this.endpointConfirmed[phase] };
+    }
+    legacyBridgeModel(model) {
+      // Old (pre-zcode-plans-v1) bridges reject unknown fields: a zcode draft
+      // loses the plan field and keeps the five legacy fields they validate.
+      if (model?.provider === "zcode" && !this.capabilities.includes("zcode-plans-v1")) {
+        const { plan, ...legacy } = model;
+        return legacy;
+      }
+      return model;
     }
     fillConfig(value, verified = true, preserveDraft = false) {
       if (this.closed) return;
       this.configured = value.configured; this.credentials = value.credentials; this.configDirty = preserveDraft;
       this.credentialsVerified = verified;
       this.savedConfig = value.config;
+      const plans = this.readZcodePlans(value.zcodePlans);
+      if (plans) this.zcodePlans = plans;
       for (const phase of preserveDraft ? [] : ["qc", "zh"]) {
         // Legacy five-field profiles omitted thinking intentionally. A new-template
         // default must not convert that omission into an explicit enabled request.
-        const profile = { ...Bridge.profileDefaults(value.config[phase].provider), thinking: "default", ...value.config[phase] };
+        // zcode hydrates separately: it has no thinking or endpoint fields, and
+        // injecting the legacy thinking default would make Bridge.profile reject
+        // the whole row (zcode forbids every extended field) and abort the
+        // hydration of the other role. Its inputs show the honest "default"
+        // (the login never sends a thinking parameter).
+        const saved = value.config[phase];
+        const profile = saved.provider === "zcode"
+          ? { ...Bridge.hydrationDefaults("zcode"), ...saved }
+          : { ...Bridge.hydrationDefaults(saved.provider), thinking: "default", ...saved };
+        this.el(phase + "-plan").value = profile.plan === "start" ? "start" : "coding";
         for (const [field, key] of [["provider", "provider"], ["model", "model"], ["effort", "reasoning_effort"],
           ["thinking", "thinking"], ["protocol", "protocol"], ["base-url", "base_url"], ["models-url", "models_url"],
-          ["timeout", "timeout"], ["max-tokens", "max_tokens"]]) this.el(`${phase}-${field}`).value = profile[key];
+          ["timeout", "timeout"], ["max-tokens", "max_tokens"]]) {
+          // zcode profiles carry no endpoint fields; never coerce undefined
+          // into the inputs (a later .trim() would crash on it).
+          const cell = profile[key];
+          this.el(`${phase}-${field}`).value = cell === undefined ? "" : cell;
+        }
+        if (profile.provider === "zcode") this.el(phase + "-thinking").value = "default";
         this.el(`${phase}-extra-body`).value = JSON.stringify(profile.extra_body || {}, null, 2);
         this.endpointConfirmed[phase] = profile.endpoint_confirmed === true;
         this.profileProviders[phase] = profile.provider;
+        // A hydrated (legacy) zcode profile immediately shows its honest
+        // availability state and the migration path; other providers clear it.
+        this.text(phase + "-provider-notice", profile.provider === "zcode"
+          ? this.zcodePlanNotice(phase, profile.plan === "start" ? "start" : "coding") : "");
         if (this.testStates[phase]?.profile !== JSON.stringify(Bridge.profile(profile, true))) {
           delete this.testStates[phase]; this.text(phase + "-test-state", "尚未测试当前配置。");
         }
@@ -1285,9 +1934,12 @@ var LibrarySyncPanel = (() => {
             options.endpoint !== JSON.stringify([profile.base_url, profile.models_url, profile.protocol]) ||
             (options.epoch ?? 0) !== (this.keyEpoch[profile.provider] || 0)) this.clearModelOptions(phase);
         if (!this.modelOptions[phase]) {
-          // QC and ZH with the same trusted catalog share one cached listing.
+          // QC and ZH with the same trusted catalog share one cached listing;
+          // without one, recognized default endpoints show the bundled
+          // offline snapshot immediately while an explicit refresh can follow.
           const cached = this.catalogCacheGet(this.catalogIdentity(phase));
           if (cached) this.presentModelChoices(phase, cached.choices, "hit");
+          else this.presentBundledCatalog(phase);
         }
         this.updateEffortOptions(phase);
         this.updateHabitNote(phase);
@@ -1312,10 +1964,17 @@ var LibrarySyncPanel = (() => {
     saveConfig(keysOnly = false) {
       return this.action(async () => {
         if (!this.connected || this.pathsDirty) throw new Bridge.SafeError("CONNECT", "请先连接 bridge；尚未发送，输入保留。");
+        const unsupportedPlan = this.zcodeUnsupportedReason("qc") || this.zcodeUnsupportedReason("zh");
+        if (unsupportedPlan) throw new Bridge.SafeError("CAPABILITY", unsupportedPlan);
         const schoolReason = this.tongjiSupportReason(keysOnly);
         if (schoolReason) throw new Bridge.SafeError("CAPABILITY", schoolReason);
         let normalized = keysOnly ? null : Bridge.config({ schema: 1, qc: this.readModel("qc"), zh: this.readModel("zh") });
         if (normalized) for (const phase of ["qc", "zh"]) normalized[phase] = this.confirmEndpoint(phase, normalized[phase]);
+        if (normalized && !this.capabilities.includes("zcode-plans-v1")) {
+          // Old bridges reject the plan field; their legacy zcode rows keep
+          // the five fields they have always validated.
+          for (const phase of ["qc", "zh"]) normalized[phase] = this.legacyBridgeModel(normalized[phase]);
+        }
         const keys = this.changedKeys(["glm", "deepseek", "tongji"]);
         if (keysOnly && !Object.keys(keys).length) { this.message("Key 没有修改，无需重复保存。"); return; }
         if (this.active && Object.keys(keys).length) throw new Bridge.SafeError("CONFIG", "已有任务运行，不能更新密钥；请等待任务结束后保存，或仅保存模型（不改 Key）。");
@@ -1429,12 +2088,20 @@ var LibrarySyncPanel = (() => {
         if (!this.connected || this.pathsDirty) throw new Bridge.SafeError("CONNECT", "请先连接 bridge。");
         if (!this.capabilities.includes("model-profiles-v2")) throw new Bridge.SafeError("CAPABILITY", "请更新空闲的 bridge 后重新连接，新模型参数不能发送给旧服务。");
         if (kind === "test" && !this.capabilities.includes("model-test-role-v1")) throw new Bridge.SafeError("CAPABILITY", "本地服务尚未支持区分 QC / ZH 测试；请更新空闲的 bridge 后重新连接，未发送测试请求。");
+        const unsupportedPlan = this.zcodeUnsupportedReason(phase);
+        if (unsupportedPlan) throw new Bridge.SafeError("CAPABILITY", unsupportedPlan);
         let model = Bridge.profile(this.readModel(phase));
         if (model.provider === "tongji" && !this.capabilities.includes("tongji-api-v1")) throw new Bridge.SafeError("CAPABILITY", "本机服务尚不支持同济 API，请更新 bridge 后重新连接；尚未发送请求。");
-        // A paid test always follows the existing endpoint confirmation.
-        model = this.confirmEndpoint(phase, model);
-        if (!this.credentials[model.provider]) throw new Bridge.SafeError("CONFIG", "请先保存所选 provider 的密钥。");
-        const id = await this.client.test(model, phase);
+        if (model.provider === "zcode") {
+          // The CLI test starts a headless ZCode process and can take a minute.
+          if (this.credentials.zcode !== true) throw new Bridge.SafeError("CONFIG", "本机 ZCode 尚未登录 GLM；请打开 ZCode 登录后重试，或改用 API Key 服务商。");
+          this.text("model-result", "正在通过本机 ZCode 登录发送测试请求（启动无头进程，约需一分钟）…");
+        } else {
+          // A paid test always follows the existing endpoint confirmation.
+          model = this.confirmEndpoint(phase, model);
+          if (!this.credentials[model.provider]) throw new Bridge.SafeError("CONFIG", "请先保存所选 provider 的密钥。");
+        }
+        const id = await this.client.test(this.legacyBridgeModel(model), phase);
         if (this.closed) return;
         this.pending = { id, kind, phase, provider: model.provider, profile: JSON.stringify(model), endpoint: Bridge.endpointSignature(model) }; this.message("模型请求已提交，等待结果…");
         this.text("model-result", `操作 ${id} · 测试模型`);
@@ -1472,7 +2139,7 @@ var LibrarySyncPanel = (() => {
       if (this.closed || !value || !choices || choices.provider !== this.el(phase + "-provider").value ||
           choices.endpoint !== Bridge.endpointSignature(this.modelContext(phase)) || !choices.models.includes(value)) return;
       this.modelFieldChanged(phase, "model");
-      this.applyModelMaximum(phase);
+      this.applyModelDefaults(phase);
     }
     updateKeyDisplays() {
       if (this.closed) return;
@@ -1529,22 +2196,55 @@ var LibrarySyncPanel = (() => {
       for (const picker of Object.values(this.pickers)) picker.destroy();
       if (this.timer !== null) this.window.clearInterval(this.timer);
       for (const [el, event, handler] of this.handlers) el.removeEventListener(event, handler);
-      this.handlers = []; this.pending = null; this.catalogPending = {};
+      this.handlers = []; this.pending = null; this.catalogPending = {}; this.diagnosis = null; this.remedyBusy = false;
+      // Shutdown cleanup: no stale options, catalogs or handshake state may
+      // survive into a reopened panel sharing this controller's memory.
+      this.modelOptions = { qc: null, zh: null };
+      this.modelCatalogs.clear();
+      this.readySignaled = false;
       this.catalogTokens = { qc: (this.catalogTokens.qc || 0) + 1, zh: (this.catalogTokens.zh || 0) + 1 };
       this.el("glm-key").value = ""; this.el("deepseek-key").value = ""; this.el("tongji-key").value = ""; this.el("mineru-key").value = "";
       this.client.close(); this.host.panelClosed?.(this.window);
       // No HTTP request, no process termination. Worker ownership belongs to bridge.
     }
   }
-  return { Controller, duration };
+  async function boot(window) {
+    // Guarded DOMContentLoaded entry: a missing/invalid host argument or any
+    // init failure must leave a closable window with sanitized stage info,
+    // never a silent blank panel. Only fixed stage labels and SafeError
+    // messages are shown; exception bodies never reach the DOM.
+    let stage = "arguments", controller = null;
+    try {
+      const args = Array.isArray(window.arguments) && objectLike(window.arguments[0]) ? window.arguments[0] : null;
+      const host = args ? args.host : null;
+      if (!objectLike(host) || typeof host.getPaths !== "function" || typeof host.createClient !== "function") {
+        throw new Bridge.SafeError("HOST", "面板宿主参数缺失或无效；请关闭本窗口后从菜单重新打开，若仍失败请重启 Zotero。");
+      }
+      stage = "create";
+      controller = new Controller(window, host, host.createClient());
+      window.librarySyncController = controller;
+      window.addEventListener("unload", () => controller.close(), { once: true });
+      stage = "init";
+      await controller.init(args.selected === true);
+    } catch (error) {
+      if (controller) { controller.bootFailure(error, controller.bootStage || stage); return; }
+      const safe = error instanceof Bridge.SafeError || error?.name === "SafeError" ? error.message : "";
+      try {
+        const note = window.document?.getElementById?.("message");
+        if (note) {
+          note.hidden = false;
+          note.setAttribute("data-error", "true");
+          note.textContent = `面板初始化失败（阶段 ${stage}）。` + (safe || "请关闭本窗口重新打开；若仍失败请重启 Zotero 后重试。");
+        }
+        const bootLine = window.document?.getElementById?.("panel-boot");
+        if (bootLine) bootLine.textContent = "面板初始化失败；本窗口可关闭后重新打开。";
+        window.document?.getElementById?.("close-panel")?.addEventListener?.("click", () => window.close());
+      } catch (_) { /* the static markup already carries its own guidance */ }
+    }
+  }
+  return { Controller, duration, boot };
 })();
 if (typeof module !== "undefined") module.exports = LibrarySyncPanel;
 else {
-  window.addEventListener("DOMContentLoaded", async () => {
-    const { host, selected } = window.arguments[0];
-    const controller = new LibrarySyncPanel.Controller(window, host, host.createClient());
-    window.librarySyncController = controller;
-    window.addEventListener("unload", () => controller.close(), { once: true });
-    await controller.init(selected);
-  }, { once: true });
+  window.addEventListener("DOMContentLoaded", () => { void LibrarySyncPanel.boot(window); }, { once: true });
 }

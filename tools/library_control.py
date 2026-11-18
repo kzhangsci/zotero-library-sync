@@ -26,6 +26,13 @@ def _root(run_id):
     return safe_path(s.RUNS, run_id)
 
 def held_items(runs):
+    released = set()
+    try:
+        from library_issues import load as load_issues
+        ledger = load_issues(runs)
+        released = {key for key, row in ledger.get('items', {}).items() if isinstance(row, dict) and row.get('hold_released') is True}
+    except Exception:
+        released = set()
     held = {}
     for path in sorted(Path(runs).glob('*/state.json')):
         state = _read(path)
@@ -50,7 +57,8 @@ def held_items(runs):
             continue
         if state.get('status') == 'paused' or (state.get('worker_resume_of') and state.get('status') == 'blocked'):
             for key in state.get('requested', []):
-                held[key] = state['id']
+                if key not in released:
+                    held[key] = state['id']
     return held
 
 def finalize_barrier(state, run, checkpoint):
@@ -84,6 +92,23 @@ def request_pause(run_id):
 def _attachment_set(snapshot, key):
     return sorted(((x['key'], x['data'].get('filename', ''), x['data'].get('contentType', '')) for x in snapshot['items'] if x['data'].get('parentItem') == key and x['data'].get('itemType') == 'attachment' and (not x['data'].get('deleted'))))
 
+def paper_outcome(paper):
+    if paper.get('qa', {}).get('ok') is True and paper.get('exit_code') == 0:
+        return 'completed'
+    if paper.get('exit_code') == PAUSED_EXIT and paper.get('qa', {}).get('ok') is not True:
+        return 'paused'
+    return 'failed'
+
+def _failed_reasons(paper):
+    reasons = []
+    if paper.get('exit_code') is not None and paper['exit_code'] != 0:
+        reasons.append(f"worker 退出码 {paper['exit_code']}")
+    qa = paper.get('qa', {})
+    if isinstance(qa, dict) and qa.get('ok') is False:
+        codes = sorted({str(e.get('code')) for e in qa.get('errors', []) if isinstance(e, dict) and e.get('code')})
+        reasons.append('产物验收未通过' + ('：' + ','.join(codes) if codes else ''))
+    return reasons or ['本篇未通过验收，原因见任务报告与日志']
+
 def seal_pause(state, run):
     s = _sync()
     from library_resume import expected_note_hash
@@ -91,12 +116,11 @@ def seal_pause(state, run):
     if state.get('finalize_phase') or not state.get('baseline'):
         raise RuntimeError('不在可暂停的步骤边界')
     snapshot = _read(run / 'snapshot.json')
-    papers = {}
+    papers, failed = ({}, [])
     for paper in state['papers']:
-        if paper.get('exit_code') not in (0, PAUSED_EXIT):
-            raise RuntimeError('worker 失败不是已暂停，需检查日志')
+        outcome = paper_outcome(paper)
         files = s.paper_fingerprint(paper)
-        if paper.get('qa', {}).get('ok'):
+        if outcome == 'completed':
             folder = (s.LIBRARY / 'papers' / paper['citekey']).resolve()
             primary = Path(paper['primary_pdf']).resolve()
             approved = {name: digest for name, digest in state.get('qa_frozen', {}).items() if Path(name).resolve().is_relative_to(folder) or Path(name).resolve() == primary}
@@ -108,9 +132,14 @@ def seal_pause(state, run):
         expected_note = expected_note_hash(paper, before, state.get('qa_frozen', {}))
         if note in before and files[note] != expected_note:
             raise RuntimeError('Existing Note changed during run; refusing pause receipt')
-        papers[paper['key']] = {'files': files, 'attachments': _attachment_set(snapshot, paper['key'])}
-    s.save_json(run / 'pause_receipt.json', {'schema': 1, 'run_id': state['id'], 'snapshot_sha256': s.sha256(run / 'snapshot.json'), 'papers': papers})
+        papers[paper['key']] = {'files': files, 'attachments': _attachment_set(snapshot, paper['key']), 'status': outcome}
+        if outcome == 'failed':
+            failed.append({'key': paper['key'], 'citekey': paper.get('citekey', ''), 'reasons': _failed_reasons(paper)})
+    s.save_json(run / 'pause_receipt.json', {'schema': 2, 'run_id': state['id'], 'snapshot_sha256': s.sha256(run / 'snapshot.json'), 'papers': papers})
     state.update(status='paused', phase='paused', pause_reason='user_requested', pause_checkpoint=True)
+    if failed:
+        state['pause_failed_papers'] = failed
+        state['needs_action'] = list(state.get('needs_action', [])) + failed
 
 def remaining_steps(paper):
     s = _sync()
@@ -136,6 +165,108 @@ def remaining_steps(paper):
         steps.append('note')
     return steps
 
+def _recovery_candidate(runs, run_id):
+    root = Path(runs) / run_id
+    if not (root / 'state.json').is_file():
+        raise RuntimeError('找不到该任务记录')
+    if (root / 'pause_receipt.json').is_file():
+        raise RuntimeError('该任务已有暂停凭据；请使用普通“继续”而不是遗留恢复')
+    if not (root / 'pause_request.json').is_file():
+        raise RuntimeError('该任务没有暂停请求，不属于遗留暂停恢复范围')
+    dispatch = root / 'resume_dispatch.json'
+    if dispatch.is_file():
+        return _read(dispatch).get('run_id')
+    return None
+
+def prepare_recovery(client, run_id, attempt=None):
+    s = _sync()
+    from library_resume import expected_note_hash, safe_path, verify_identity
+    root = _root(run_id)
+    state = _read(root / 'state.json')
+    if state.get('id') != run_id or state.get('control_schema') != 1 or state.get('status') != 'blocked' or (state.get('monitor_done') is not True) or state.get('finalize_phase') or state.get('resume_of') or state.get('worker_resume_of'):
+        raise RuntimeError('仅支持“已请求暂停但未生成暂停凭据”的原始受阻任务')
+    if not (root / 'pause_request.json').is_file():
+        raise RuntimeError('该任务没有暂停请求记录，不能按遗留暂停恢复')
+    if (root / 'pause_receipt.json').is_file():
+        raise RuntimeError('该任务已有暂停凭据；请使用普通“继续”')
+    dispatch_file = root / 'resume_dispatch.json'
+    if dispatch_file.exists() and _read(dispatch_file).get('run_id') != attempt:
+        raise RuntimeError('该任务已派发过恢复，请查看其后续任务，不重复启动')
+    if state.get('controller') and s.progress.owner_matches(state['controller']):
+        raise RuntimeError('原控制器尚未退出，请稍后再试')
+    baseline = state.get('baseline', {})
+    if baseline.get('schema') != 1 or not isinstance(baseline.get('before'), dict):
+        raise RuntimeError('该历史任务缺少所有权基线，证据不足；请选择文献重新预演，不覆盖现有产物')
+    papers = copy.deepcopy(state['papers'])
+    if not papers or {p['key'] for p in papers} != set(state['requested']):
+        raise RuntimeError('受阻条目范围不完整，证据不足')
+    s.assert_idle()
+    s.assert_unstaged()
+    old_snapshot = _read(root / 'snapshot.json')
+    guards = s.fingerprint([root / 'state.json', root / 'snapshot.json'])
+    owned = [safe_path(s.LIBRARY, f"papers/{p['citekey']}/{p['citekey']}_{suffix}.md") for p in papers for suffix in ('EN', 'MD', 'ZH', 'Note')]
+    if set(baseline['owned']) != {str(p) for p in owned}:
+        raise RuntimeError('历史所有权基线与当前条目不匹配')
+    s.assert_indexes(baseline['before_index'])
+    items, frozen, protected, work, needs_action, evidence = ([], {}, {}, {}, {}, {})
+    qa_frozen = state.get('qa_frozen', {})
+    for paper in papers:
+        if paper.get('status') != 'applied' or paper.get('blocked') or paper.get('redo_required'):
+            raise RuntimeError(f"{paper.get('citekey', paper['key'])} 附件准备当时未完成，不能跳过准备阶段恢复")
+        family = client.parent_children(paper['key'])
+        family_items = [family['parent'], *family['children']]
+        verify_identity({'items': family_items}, [paper])
+        attachments = _attachment_set({'items': family_items}, paper['key'])
+        if attachments != _attachment_set(old_snapshot, paper['key']):
+            raise RuntimeError(f"{paper['citekey']} 附件记录或角色已变化；恢复不会生成新附件")
+        if Path(client.file_path(paper['primary_key'])).resolve() != Path(paper['primary_pdf']).resolve():
+            raise RuntimeError('正本路径已改变')
+        s.assert_hashes({paper['primary_pdf']: paper['source_sha256']}, 'Recovery primary')
+        current = s.paper_fingerprint(paper)
+        note = str(safe_path(s.LIBRARY, f"papers/{paper['citekey']}/{paper['citekey']}_Note.md"))
+        expected_note = expected_note_hash(paper, baseline['before'], qa_frozen)
+        if note in baseline['before'] and current[note] != expected_note:
+            raise RuntimeError('Existing Note differs from its baseline; refusing recovery')
+        items.extend(family_items)
+        run_outputs = sorted((str(p) for p in owned if p.parent.name == paper['citekey'] and current.get(str(p)) != baseline['before'].get(str(p))))
+        outcome = paper_outcome(paper)
+        if outcome == 'failed':
+            reasons = _failed_reasons(paper)
+            if not reasons:
+                reasons = next((row.get('reasons') for row in state.get('pause_failed_papers', []) if row.get('key') == paper['key']), [])
+            needs_action[paper['key']] = reasons or ['受阻时本篇未通过验收']
+            work[paper['key']] = []
+            evidence[paper['key']] = {'outcome': 'failed', 'uncommitted_outputs': run_outputs}
+            continue
+        steps = remaining_steps(paper)
+        work[paper['key']] = steps
+        evidence[paper['key']] = {'outcome': 'paused' if steps else 'completed', 'uncommitted_outputs': run_outputs}
+        may_change = set()
+        if {'qc', 'md', 'folders'} & set(steps):
+            may_change |= {str(s.LIBRARY / 'papers' / paper['citekey'] / f"{paper['citekey']}_{k}.md") for k in ('EN', 'MD')}
+        if 'zh' in steps:
+            may_change |= {str(s.LIBRARY / 'papers' / paper['citekey'] / f"{paper['citekey']}_ZH.md")}
+        protected.update({name: digest for name, digest in current.items() if digest is not None and name not in may_change})
+        if not steps:
+            sealed = {name: digest for name, digest in qa_frozen.items() if Path(name).resolve().is_relative_to((s.LIBRARY / 'papers' / paper['citekey']).resolve())}
+            if not sealed or any((current.get(name) != digest for name, digest in sealed.items())):
+                raise RuntimeError(f"{paper['citekey']} 当时已验收但当前字节与冻结凭据不一致；请人工核对")
+            paper['exit_code'] = 0
+            frozen.update(s.validate_completed_paper(paper))
+            if not paper['qa']['ok']:
+                raise RuntimeError('已完成产物复验失败；不自动重解析或重译')
+    if state.get('model_config'):
+        from model_api import validate_config
+        needed = tuple((role for role in ('qc', 'zh') if any((role in steps for steps in work.values()))))
+        validate_config(state['model_config'], require_credentials=bool(needed), required_roles=needed or ('qc', 'zh'))
+    dirty = s.dirty_paths(s.LIBRARY)
+    if any((x.startswith('indexes/') for x in dirty)):
+        raise RuntimeError('索引有用户修改，不覆盖')
+    batch_changes = {p.relative_to(s.LIBRARY).as_posix() for p in owned if s.fingerprint([p]).get(str(p)) != baseline['before'].get(str(p))}
+    dirty = dirty - batch_changes | set(baseline['library_dirty'])
+    s.assert_hashes(guards, 'Original blocked records')
+    return dict(original=state, papers=papers, owned=owned, baseline=baseline, snapshot=s.live_snapshot({'time': dt.datetime.now().isoformat(), 'items': items, 'collections': old_snapshot['collections']}), guards=guards, frozen=frozen, protected=protected, steps=work, needs_action=needs_action, evidence=evidence, recovery=True, dirty=dirty, tools_dirty=s.dirty_paths(s.state_repo()))
+
 def prepare_resume(client, run_id, attempt=None):
     s = _sync()
     from library_resume import expected_note_hash, safe_path, verify_identity
@@ -151,7 +282,7 @@ def prepare_resume(client, run_id, attempt=None):
     s.assert_idle()
     s.assert_unstaged()
     receipt = _read(root / 'pause_receipt.json')
-    if receipt.get('schema') != 1 or receipt.get('run_id') != run_id:
+    if receipt.get('schema') not in (1, 2) or receipt.get('run_id') != run_id:
         raise RuntimeError('暂停凭据无效')
     guards = s.fingerprint([root / 'state.json', root / 'pause_receipt.json', root / 'snapshot.json'])
     if guards.get(str(root / 'snapshot.json')) != receipt.get('snapshot_sha256'):
@@ -162,20 +293,26 @@ def prepare_resume(client, run_id, attempt=None):
     if len(keys) != len(papers) or keys != set(state['requested']) or keys != set(receipt['papers']):
         raise RuntimeError('暂停条目范围不完整或有重复')
     baseline = state['baseline']
-    owned = [safe_path(s.LIBRARY, f'papers/{p['citekey']}/{p['citekey']}_{suffix}.md') for p in papers for suffix in ('EN', 'MD', 'ZH', 'Note')]
+    owned = [safe_path(s.LIBRARY, f"papers/{p['citekey']}/{p['citekey']}_{suffix}.md") for p in papers for suffix in ('EN', 'MD', 'ZH', 'Note')]
     if baseline.get('schema') != 1 or set(baseline['owned']) != {str(p) for p in owned}:
         raise RuntimeError('暂停所有权基线不匹配')
     if not set(baseline['before']) <= set(baseline['owned']):
         raise RuntimeError('暂停所有权路径无效')
     s.assert_indexes(baseline['before_index'])
-    items, frozen, protected, work = ([], {}, {}, {})
+    items, frozen, protected, work, needs_action = ([], {}, {}, {}, {})
     for paper in papers:
         if paper.get('status') != 'applied' or paper.get('blocked') or paper.get('redo_required'):
             raise RuntimeError('附件准备尚未完成，不能跳过准备阶段恢复')
-        expected = receipt['papers'][paper['key']]['files']
+        expected = receipt['papers'][paper['key']]
+        if receipt.get('schema') == 1:
+            outcome = 'completed' if paper.get('exit_code') == 0 and paper.get('qa', {}).get('ok') is True else 'paused'
+        else:
+            outcome = expected.get('status')
+            if outcome not in ('completed', 'paused', 'failed'):
+                raise RuntimeError('暂停凭据缺少有效的逐篇状态')
         current = s.paper_fingerprint(paper)
-        if current != expected:
-            raise RuntimeError(f'{paper['citekey']} 的暂停产物/正本有变化，保留改动并停止')
+        if current != expected['files']:
+            raise RuntimeError(f"{paper['citekey']} 的暂停产物/正本有变化，保留改动并停止")
         s.assert_hashes({paper['primary_pdf']: paper['source_sha256']}, 'Resume primary')
         family = client.parent_children(paper['key'])
         family_items = [family['parent'], *family['children']]
@@ -185,15 +322,22 @@ def prepare_resume(client, run_id, attempt=None):
             raise RuntimeError('附件记录或角色已变化；恢复不会生成新附件')
         if Path(client.file_path(paper['primary_key'])).resolve() != Path(paper['primary_pdf']).resolve():
             raise RuntimeError('正本路径已改变')
-        note = str(safe_path(s.LIBRARY, f'papers/{paper['citekey']}/{paper['citekey']}_Note.md'))
+        note = str(safe_path(s.LIBRARY, f"papers/{paper['citekey']}/{paper['citekey']}_Note.md"))
         expected_note = expected_note_hash(paper, baseline['before'], state.get('qa_frozen', {}))
         if note in baseline['before'] and current[note] != expected_note:
             raise RuntimeError('Existing Note differs from its source/pause receipt')
         items.extend(family_items)
+        if outcome == 'failed':
+            reasons = _failed_reasons(paper)
+            if not reasons:
+                reasons = next((row.get('reasons') for row in state.get('pause_failed_papers', []) if row.get('key') == paper['key']), [])
+            needs_action[paper['key']] = reasons or ['暂停时本篇未通过验收']
+            work[paper['key']] = []
+            continue
         steps = remaining_steps(paper)
         work[paper['key']] = steps
-        may_change = {str(s.LIBRARY / 'papers' / paper['citekey'] / f'{paper['citekey']}_{k}.md') for k in ('EN', 'MD')} if 'qc' in steps else set()
-        protected.update({name: digest for name, digest in expected.items() if digest is not None and name not in may_change})
+        may_change = {str(s.LIBRARY / 'papers' / paper['citekey'] / f"{paper['citekey']}_{k}.md") for k in ('EN', 'MD')} if 'qc' in steps else set()
+        protected.update({name: digest for name, digest in expected['files'].items() if digest is not None and name not in may_change})
         if not steps:
             paper['exit_code'] = 0
             frozen.update(s.validate_completed_paper(paper))
@@ -209,12 +353,12 @@ def prepare_resume(client, run_id, attempt=None):
     batch_changes = {p.relative_to(s.LIBRARY).as_posix() for p in owned if s.fingerprint([p]).get(str(p)) != baseline['before'].get(str(p))}
     dirty = dirty - batch_changes | set(baseline['library_dirty'])
     s.assert_hashes(guards, 'Original pause records')
-    return dict(original=state, papers=papers, owned=owned, baseline=baseline, snapshot=s.live_snapshot({'time': dt.datetime.now().isoformat(), 'items': items, 'collections': old_snapshot['collections']}), guards=guards, frozen=frozen, protected=protected, steps=work, dirty=dirty, tools_dirty=s.dirty_paths(s.state_repo()))
+    return dict(original=state, papers=papers, owned=owned, baseline=baseline, snapshot=s.live_snapshot({'time': dt.datetime.now().isoformat(), 'items': items, 'collections': old_snapshot['collections']}), guards=guards, frozen=frozen, protected=protected, steps=work, needs_action=needs_action, dirty=dirty, tools_dirty=s.dirty_paths(s.state_repo()))
 
 def new_attempt():
     return dt.datetime.now().strftime('%Y%m%d_%H%M%S_') + uuid.uuid4().hex[:6]
 
-def launch_resume(run_id, *, finalize_only=False):
+def launch_resume(run_id, *, finalize_only=False, use_saved_model=False, recovery=False):
     s = _sync()
     root = _root(run_id)
     with s.launch_lock():
@@ -237,17 +381,36 @@ def launch_resume(run_id, *, finalize_only=False):
         if path.exists() and retry_root is None:
             old = _read(path)
             return {'run_id': old['run_id'], 'started': False, 'already_submitted': True, 'resume_of': run_id}
+        model_choice = None
+        if use_saved_model and (not finalize_only):
+            from model_api import load_config, validate_config
+            from library_sync import model_roles
+            saved = load_config()
+            if saved is None:
+                raise RuntimeError('尚未保存可用的模型配置；默认将沿用原任务冻结配置')
+            plan_like = {'translate': source.get('translate', True), 'items': source.get('papers', [])}
+            try:
+                model_choice = validate_config(saved, require_credentials=True, required_roles=model_roles(plan_like))
+            except Exception as error:
+                raise RuntimeError(f'已保存的模型配置不能用于本次恢复所需角色：{error}；默认将沿用原任务冻结配置') from None
         if finalize_only:
             view = s.progress.snapshot(s.RUNS, run_id, s.LIBRARY)
             if not view.get('can_resume_finalize'):
                 raise RuntimeError('此任务不在可核实的仅收尾恢复范围')
+        elif recovery:
+            if _recovery_candidate(s.RUNS, run_id) is not None:
+                raise RuntimeError('该任务已派发过恢复；请查看其后续任务')
+            if source.get('control_schema') != 1 or source.get('status') != 'blocked' or (not source.get('monitor_done')):
+                raise RuntimeError('此任务不是可恢复的遗留暂停受阻记录')
         elif source.get('control_schema') != 1 or source.get('status') != 'paused' or (not source.get('monitor_done')):
             raise RuntimeError('此任务没有可恢复的安全暂停记录')
         s.assert_idle()
         attempt = new_attempt()
         destination = s.RUNS / attempt
         destination.mkdir(parents=True, exist_ok=False)
-        s.save_json(path, {'schema': 1, 'run_id': attempt, 'source': run_id, 'source_sha256': s.sha256(root / 'state.json'), 'finalize_only': finalize_only})
+        s.save_json(path, {'schema': 1, 'run_id': attempt, 'source': run_id, 'source_sha256': s.sha256(root / 'state.json'), 'finalize_only': finalize_only, **({'recovery': True} if recovery else {})})
+        if model_choice is not None:
+            s.save_json(destination / 'model_choice.json', {'schema': 1, 'config': model_choice})
         if retry_root is not None:
             s.save_json(retry_root / 'resume_dispatch.json', {'schema': 1, 'run_id': attempt, 'source': run_id})
         python = Path(sys.executable)
@@ -256,6 +419,8 @@ def launch_resume(run_id, *, finalize_only=False):
         command = [str(python), '-B', '-X', 'utf8', str(s.REPO / 'tools' / 'library_sync.py'), '--resume-run', run_id, '--attempt-id', attempt, '--apply']
         if finalize_only:
             command += ['--finalize-only']
+        if recovery:
+            command += ['--recover-legacy']
         try:
             with (destination / 'controller.log').open('w', encoding='utf-8') as log:
                 proc = subprocess.Popen(command, cwd=s.REPO, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, close_fds=True, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
@@ -264,9 +429,28 @@ def launch_resume(run_id, *, finalize_only=False):
         except Exception:
             s.save_json(destination / 'launch_failure.json', {'source': run_id, 'retry_automatically': False})
             raise RuntimeError('恢复进程启动未确认；保留记录，请检查，未自动重试') from None
-    return {'run_id': attempt, 'started': True, 'resume_of': run_id}
+    return {'run_id': attempt, 'started': True, 'resume_of': run_id, **({'recovery': True} if recovery else {}), **({'model_config_source': 'selected_saved'} if model_choice is not None else {})}
 
-def resume_run(client, run_id, *, apply=False, attempt=None, finalize_only=False):
+def _selected_model_config(run, state):
+    choice_file = run / 'model_choice.json'
+    if not choice_file.is_file():
+        state['model_config_source'] = 'frozen_original'
+        return None
+    from model_api import load_config, validate_config
+    from library_sync import model_roles
+    choice = _read(choice_file)
+    if choice.get('schema') != 1 or not isinstance(choice.get('config'), dict):
+        raise RuntimeError('恢复模型选择记录无效；请重新派发恢复')
+    saved = load_config()
+    if saved is None or validate_config(saved) != choice['config']:
+        raise RuntimeError('保存的模型配置在选择后已变化；请重新预览并再次确认恢复')
+    plan_like = {'translate': state.get('translate', True), 'items': state.get('papers', [])}
+    config = validate_config(choice['config'], require_credentials=True, required_roles=model_roles(plan_like))
+    state['model_config_source'] = 'selected_saved'
+    state['selected_model_config'] = config
+    return config
+
+def resume_run(client, run_id, *, apply=False, attempt=None, finalize_only=False, recover_legacy=False):
     s = _sync()
     s.progress._run_id(run_id)
     if attempt is not None:
@@ -274,17 +458,18 @@ def resume_run(client, run_id, *, apply=False, attempt=None, finalize_only=False
     if finalize_only:
         from library_resume import resume_finalize
         return resume_finalize(client, run_id, apply=apply, attempt_id=attempt)
+    prepare = prepare_recovery if recover_legacy else prepare_resume
     if not apply:
-        prepared = prepare_resume(client, run_id)
-        print(json.dumps({'run_id': run_id, 'steps': prepared['steps'], 'dry_run': True}, ensure_ascii=False))
+        prepared = prepare(client, run_id)
+        print(json.dumps({'run_id': run_id, 'steps': prepared['steps'], 'needs_action': prepared.get('needs_action', {}), 'recovery': bool(prepared.get('recovery')), 'dry_run': True}, ensure_ascii=False))
         return 0
     if attempt is None:
-        result = launch_resume(run_id)
+        result = launch_resume(run_id, recovery=recover_legacy)
         print(json.dumps(result, ensure_ascii=False))
         return 0
     root = _root(run_id)
     dispatch = _read(root / 'resume_dispatch.json')
-    if dispatch.get('run_id') != attempt or dispatch.get('source_sha256') != s.sha256(root / 'state.json'):
+    if dispatch.get('run_id') != attempt or dispatch.get('source_sha256') != s.sha256(root / 'state.json') or bool(dispatch.get('recovery')) != recover_legacy:
         raise RuntimeError('恢复派发与原暂停记录不一致')
     if (s.RUNS / attempt / 'state.json').exists():
         raise RuntimeError('该恢复 attempt 已执行，禁止覆盖原记录')
@@ -294,21 +479,31 @@ def resume_run(client, run_id, *, apply=False, attempt=None, finalize_only=False
             raise RuntimeError('该恢复 attempt 已执行，禁止覆盖原记录')
         report = s.REPORTS / f'library_sync_{attempt}.md'
         state = dict(id=attempt, worker_resume_of=run_id, control_schema=1, started=dt.datetime.now().isoformat(), status='running', phase='preflight', papers=[], requested=[], warnings=[], deferred=[], chunk_parallel=1, controller=s.progress.process_identity(os.getpid()), monitor_done=False, report=str(report))
+        if recover_legacy:
+            state['recovered_from'] = run_id
         commit, tools_dirty, ledger = (False, set(), None)
         checkpoint = lambda: s.progress_checkpoint(state, run)
         try:
             checkpoint()
-            p = prepare_resume(client, run_id, attempt)
+            p = prepare(client, run_id, attempt)
             old = p['original']
             commit = old.get('commit', True)
             tools_dirty = p['tools_dirty']
-            state.update(papers=p['papers'], requested=old['requested'], translate=old.get('translate', True), chunk_parallel=old['chunk_parallel'], workers=old.get('workers', 1), commit=commit, baseline=copy.deepcopy(p['baseline']), planned_papers=old.get('planned_papers', []), model_config=old.get('model_config'), deferred=old.get('deferred', []), qa_frozen=p['frozen'], resume_steps=p['steps'], phase='workers')
+            needs_rows = [{'key': paper['key'], 'citekey': paper.get('citekey', ''), 'reasons': p['needs_action'][paper['key']]} for paper in p['papers'] if paper['key'] in p.get('needs_action', {})]
+            healthy = [paper for paper in p['papers'] if paper['key'] not in p.get('needs_action', {})]
+            healthy_cks = {paper['citekey'] for paper in healthy}
+            finalize_owned = [path for path in p['owned'] if path.parent.name in healthy_cks]
+            state.update(papers=healthy, needs_action=needs_rows, requested=old['requested'], translate=old.get('translate', True), chunk_parallel=old['chunk_parallel'], workers=old.get('workers', 1), commit=commit, baseline=copy.deepcopy(p['baseline']), planned_papers=old.get('planned_papers', []), model_config=old.get('model_config'), deferred=list(old.get('deferred', [])), qa_frozen=p['frozen'], resume_steps=p['steps'], phase='workers')
+            state['deferred'] = state['deferred'] + [{'key': row['key'], 'citekey': row['citekey'], 'blocked': row['reasons'] + ['已列入待处理清单；可在任务详情中选择处置动作']} for row in needs_rows]
             state['baseline']['library_dirty'] = sorted(p['dirty'])
             state['baseline']['tools_dirty'] = sorted(tools_dirty)
             s.save_json(run / 'snapshot.json', p['snapshot'])
             if (s.RUNS / 'discovery.json').exists():
                 from library_discovery import load
                 ledger = load(s.RUNS)
+            selected = _selected_model_config(run, state)
+            if selected is not None:
+                state['model_config'] = selected
             env = os.environ.copy()
             env.update(PYTHONUTF8='1', QC_PARALLEL=str(state['chunk_parallel']), ZH_PARALLEL=str(state['chunk_parallel']), GLM_MAX_CONCURRENCY='2', LIBRARY_SYNC_PAUSE_FILE=str(run / 'pause_request.json'))
             model_args = ['--model', 'bigmodel/glm-5.3-flash']
@@ -316,12 +511,20 @@ def resume_run(client, run_id, *, apply=False, attempt=None, finalize_only=False
                 s.save_json(run / 'model_config.json', state['model_config'])
                 model_args = ['--api-config', str(run / 'model_config.json')]
             checkpoint()
-            for paper in state['papers']:
+
+            def quarantine(paper, reasons):
+                paper['needs_action_reasons'] = reasons
+                state['needs_action'] = state.get('needs_action', []) + [{'key': paper['key'], 'citekey': paper.get('citekey', ''), 'reasons': reasons}]
+                state['deferred'] = state['deferred'] + [{'key': paper['key'], 'citekey': paper.get('citekey', ''), 'blocked': reasons + ['已列入待处理清单；可在任务详情中选择处置动作']}]
+                state['papers'] = [x for x in state['papers'] if x['key'] != paper['key']]
+                state['warnings'].append(f"{paper.get('citekey', paper['key'])} 未通过验收，转入待处理：" + '；'.join(reasons))
+            for paper in list(state['papers']):
                 s.assert_hashes(p['protected'], 'Completed content')
                 steps = p['steps'][paper['key']]
                 if (run / 'pause_request.json').is_file():
                     if steps:
                         paper['exit_code'] = PAUSED_EXIT
+                        paper['progress_phase'] = 'paused'
                     continue
                 if steps:
                     s.assert_hashes(p['protected'], 'Completed content')
@@ -342,7 +545,9 @@ def resume_run(client, run_id, *, apply=False, attempt=None, finalize_only=False
                         checkpoint()
                         continue
                     if paper['exit_code'] != 0:
-                        raise RuntimeError('恢复 worker 失败；未自动重试，请查看本篇日志')
+                        quarantine(paper, [f"恢复 worker 退出码 {paper['exit_code']}；请查看本篇日志", '已在待处理清单保留证据，未自动重试'])
+                        checkpoint()
+                        continue
                 paper['exit_code'] = 0
                 with s.freeze_files(p['protected']):
                     s.assert_hashes(p['protected'], 'Completed content')
@@ -351,10 +556,15 @@ def resume_run(client, run_id, *, apply=False, attempt=None, finalize_only=False
                     if not steps and any((p['frozen'].get(k) != v for k, v in files.items())):
                         raise RuntimeError('已完成文献变化，不能更新恢复基线')
                 if not paper['qa']['ok']:
-                    raise RuntimeError('恢复产物验收未通过；不绕过质检、不重译已有内容')
+                    codes = sorted({str(e.get('code')) for e in paper['qa'].get('errors', []) if isinstance(e, dict) and e.get('code')})
+                    quarantine(paper, ['恢复产物验收未通过' + ('：' + ','.join(codes) if codes else '') + '；不绕过质检、不盲目重译'])
+                    checkpoint()
+                    continue
                 state['qa_frozen'].update(files)
                 paper['progress_phase'] = 'validated'
                 checkpoint()
+            if not state['papers'] and state['needs_action']:
+                raise RuntimeError('本批没有可通过恢复继续的文献；全部转入待处理清单，原记录保留')
             if not finalize_barrier(state, run, checkpoint):
                 seal_pause(state, run)
                 return s.finish(state, run, report, commit=False, tools_dirty=tools_dirty, discovery_ledger=ledger)
@@ -369,7 +579,7 @@ def resume_run(client, run_id, *, apply=False, attempt=None, finalize_only=False
                         raise RuntimeError('恢复期间附件记录已改变，未发布索引')
                     if Path(client.file_path(paper['primary_key'])).resolve() != Path(paper['primary_pdf']).resolve():
                         raise RuntimeError('恢复期间正本路径变化')
-            s.finalize(client, state, run, frozen=state['qa_frozen'], before_index=p['baseline']['before_index'], before=p['baseline']['before'], owned=p['owned'], source_map=source_map, dirty=p['dirty'], commit=commit, env=env, checkpoint=checkpoint, verify_snapshot=verify_live, extra_guard=lambda: s.assert_hashes(p['guards'], 'Original pause records'))
+            s.finalize(client, state, run, frozen=state['qa_frozen'], before_index=p['baseline']['before_index'], before=p['baseline']['before'], owned=finalize_owned, source_map=source_map, dirty=p['dirty'], commit=commit, env=env, checkpoint=checkpoint, verify_snapshot=verify_live, extra_guard=lambda: s.assert_hashes(p['guards'], 'Original pause records'))
         except Exception as error:
             state.update(status='blocked', error=f'{type(error).__name__}: {error}')
             if not state['papers'] and (not state['requested']):

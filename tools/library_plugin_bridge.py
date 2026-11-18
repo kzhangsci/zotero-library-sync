@@ -30,7 +30,7 @@ PREVIEW_TTL = 600
 CATALOG_TTL = 600.0
 CATALOG_QUEUE_LIMIT = 8
 CATALOG_CACHE_LIMIT = 8
-CAPABILITIES = ['keys-v1', 'mineru-v1', 'translation-policy-v1', 'credential-reveal-v1', 'model-choices-v1', 'model-profiles-v2', 'model-test-role-v1', 'pause-resume-v1', 'history-v1', 'item-selection-v1', 'source-refresh-v1', 'official-model-catalog-v1', 'catalog-cache-v1', 'tongji-api-v1', 'preview-rebind-v1']
+CAPABILITIES = ['keys-v1', 'mineru-v1', 'translation-policy-v1', 'credential-reveal-v1', 'model-choices-v1', 'model-profiles-v2', 'model-test-role-v1', 'pause-resume-v1', 'history-v1', 'item-selection-v1', 'source-refresh-v1', 'official-model-catalog-v1', 'catalog-cache-v1', 'tongji-api-v1', 'preview-rebind-v1', 'translation-repair-v1', 'report-retention-v1', 'zcode-plans-v1', 'pause-recovery-v1', 'resume-model-choice-v1', 'diagnosis-v1', 'remedy-v1', 'issues-ledger-v1', 'acronyms-v1']
 REVEAL_ERROR = '无法显示密钥；请检查已保存凭据并明确确认显示。'
 
 class RequestError(ValueError):
@@ -58,15 +58,16 @@ def preview_text(plan):
     deferred = plan.get('deferred', [])
     blocked = [item for item in plan['items'] if item.get('blocked')]
     ready = len(plan['items']) - len(blocked)
-    lines = [f'发现 {len(plan['items']) + len(deferred)} 篇：可执行 {ready} 篇、暂缓 {len(deferred) + len(blocked)} 篇；这里只预览，尚未写入 Zotero 或启动同步。']
+    lines = [f"发现 {len(plan['items']) + len(deferred)} 篇：可执行 {ready} 篇、暂缓 {len(deferred) + len(blocked)} 篇；这里只预览，尚未写入 Zotero 或启动同步。"]
     for role, label in (('qc', '质检'), ('zh', '翻译')):
         if role == 'zh' and (not plan.get('translate', True)):
             lines.append('翻译：本次关闭；保留已有译文，不改变 Zotero 标签。')
             continue
         p = plan['model_config'][role]
-        lines.append(f'{label}：{p['provider']} / {p['model']}，推理强度={p['reasoning_effort']}，Thinking={p.get('thinking', 'default')}，输出上限={p.get('max_tokens', '默认')}，单次超时={p.get('timeout', '默认')} 秒')
+        plan_label = f"，订阅={p['plan']}" if p.get('provider') == 'zcode' and p.get('plan') else ''
+        lines.append(f"{label}：{p['provider']} / {p['model']}，推理强度={p['reasoning_effort']}{plan_label}，Thinking={p.get('thinking', 'default')}，输出上限={p.get('max_tokens', '默认')}，单次超时={p.get('timeout', '默认')} 秒")
     for item in plan['items']:
-        lines += ['', f'{item['key']}  {item.get('citekey', '')}', str(item.get('title', '')), '元数据：' + json.dumps(item.get('metadata', {}), ensure_ascii=False)]
+        lines += ['', f"{item['key']}  {item.get('citekey', '')}", str(item.get('title', '')), '元数据：' + json.dumps(item.get('metadata', {}), ensure_ascii=False)]
         if item.get('refresh_source'):
             lines.append('全文更新：' + item.get('note', '重新检测正本及旧来源'))
         elif item.get('source_continue_preview'):
@@ -74,7 +75,7 @@ def preview_text(plan):
         if item.get('pdf_check'):
             checked = item['pdf_check']
             expected = checked.get('metrics', {}).get('pages_metadata', {}).get('expected_count')
-            lines.append(f'PDF 检查：实际 {checked.get('page_count', '未知')} 页' + (f'；条目页码范围对应 {expected} 页' if expected else '；条目没有可比较的页码范围') + ('；疑似缺页，请核对全文' if checked.get('likely_incomplete') else '；未发现明确缺页证据（不保证完整）'))
+            lines.append(f"PDF 检查：实际 {checked.get('page_count', '未知')} 页" + (f'；条目页码范围对应 {expected} 页' if expected else '；条目没有可比较的页码范围') + ('；疑似缺页，请核对全文' if checked.get('likely_incomplete') else '；未发现明确缺页证据（不保证完整）'))
         for action in item.get('actions', []):
             lines.append('附件动作：' + json.dumps(action, ensure_ascii=False))
         lines.extend(('阻碍：' + str(x) for x in item.get('blocked', [])))
@@ -82,7 +83,7 @@ def preview_text(plan):
         if item.get('require_translation') is False:
             lines.append('本篇：只要求原文与质检，不新增译文（本次设置、中文或已有控制规则）。')
     for item in deferred:
-        lines.append(f'保留待办 {item['key']}：{item.get('title', '')[:80]}；' + '; '.join(item.get('blocked', [])))
+        lines.append(f"保留待办 {item['key']}：{item.get('title', '')[:80]}；" + '; '.join(item.get('blocked', [])))
     translation = '翻译（中文自动跳过） → ' if plan.get('translate', True) else '跳过翻译 → '
     lines += ['', '确认后：正本命名与批注副本 → MinerU → 质检 → ' + translation + '校验 → 索引 → 选择性 Git；结果在插件任务页与报告显示，不发送桌面通知。', 'PDF 将交给 MinerU；待处理文本将发送到上面所选 API 服务商。关闭面板不影响后台，请保持 Zotero 运行。']
     return '\n'.join(lines)
@@ -151,6 +152,7 @@ class Service:
         self.catalog_generation = 0
         self.previews = {}
         self.rebound = {}
+        self.remedy_previews = {}
         self.last_access = time.monotonic()
 
     def _prune(self):
@@ -257,7 +259,7 @@ class Service:
         return {'runs': runs, 'capabilities': CAPABILITIES}
 
     def make_preview(self, payload):
-        from model_api import load_config, validate_config
+        from model_api import load_config, validate_config, assert_callable_routes
         from zotero_local import Client
         object_fields(payload, {'keys', 'workers', 'chunk_parallel', 'limit', 'translate', 'refresh_source', 'primary_keys'})
         translate = payload.get('translate', True)
@@ -279,6 +281,7 @@ class Service:
         if configured is None:
             raise RequestError('请先在设置页保存 GLM / DeepSeek / 同济校内 API 配置与密钥')
         config = validate_config(configured)
+        assert_callable_routes(config, ('qc', 'zh') if translate else ('qc',))
         workflow.assert_idle()
         args = types.SimpleNamespace(keys=','.join(dict.fromkeys(keys)), since='', collection='', limit=limit, workers=workers, chunk_parallel=parallel, no_commit=False, swap=False, no_translate=not translate, refresh_source=refresh, primary_keys=primary_keys)
         plan = workflow.make_plan(Client(apply=False), args)
@@ -379,8 +382,55 @@ class Service:
                 raise RequestError('模型配置已变化，请重新预览后确认')
             return launch_plan(plan)
 
+    def save_acronym(self, payload):
+        import csv as csv_module
+        from intake_new import BASE_TABLE, ACRONYM, _acronym_rows, norm
+        object_fields(payload, {'title', 'proposed', 'confirm'})
+        if payload.get('confirm') is not True:
+            raise RequestError('保存期刊缩写需要明确确认')
+        title = payload.get('title')
+        proposed = payload.get('proposed')
+        if not isinstance(title, str) or not title.strip() or len(title) > 300 or ('\n' in title) or title.strip().startswith(('=', '+', '-', '@', '\t')) or any((ord(c) < 32 for c in title)):
+            raise RequestError('刊名无效（不能为空、含公式注入或换行）')
+        if not isinstance(proposed, str) or not ACRONYM.fullmatch(proposed.strip()):
+            raise RequestError('缩写仅限 1–12 位字母数字（这是文件名/引用键短码，不是 ISO 4 缩写）')
+        title, proposed = (title.strip(), proposed.strip())
+        with self.lock, workflow.launch_lock():
+            user_table = workflow.REPORTS / 'journal_acronyms.csv'
+            if not user_table.is_file():
+                user_table.write_text('title,proposed\n', encoding='utf-8')
+            existing = {norm(t): p for t, p, _ in _acronym_rows(user_table, 'user')}
+            key = norm(title)
+            if key in existing and existing[key] != proposed:
+                raise RequestError(f'该刊名已映射为 {existing[key]}；如需改为 {proposed}，请直接编辑 {user_table.name}')
+            if key in existing:
+                return {'title': title, 'proposed': existing[key], 'changed': False, 'message': '该刊名已有相同映射，未重复写入。'}
+            base = {norm(t): p for t, p, _ in _acronym_rows(BASE_TABLE, 'base')} if BASE_TABLE.is_file() else {}
+            with user_table.open('r', encoding='utf-8-sig', newline='') as stream:
+                raw = [row for row in csv_module.reader(stream) if any((cell.strip() for cell in row))]
+            if not raw:
+                raw = [['title', 'proposed']]
+            header = raw[0]
+            try:
+                title_idx, proposed_idx = (header.index('title'), header.index('proposed'))
+            except ValueError:
+                raise RequestError('覆盖表缺少 title/proposed 列；请先修复该表再保存') from None
+            new_row = [''] * len(header)
+            new_row[title_idx] = title
+            new_row[proposed_idx] = proposed
+            rows = raw + [new_row]
+            temporary = user_table.with_name(user_table.name + f'.{os.getpid()}.tmp')
+            try:
+                with temporary.open('w', encoding='utf-8', newline='') as stream:
+                    csv_module.writer(stream, lineterminator='\n').writerows(rows)
+                os.replace(temporary, user_table)
+            finally:
+                temporary.unlink(missing_ok=True)
+            overridden = base.get(key)
+            return {'title': title, 'proposed': proposed, 'changed': True, 'overrides_base': bool(overridden), 'message': ('已保存（覆盖基础表中的 ' + overridden + '）' if overridden else '已保存') + '；重新预演后生效。新映射仍会经过键/附件授权核验，不会绕过。'}
+
     def dispatch(self, method, path, payload):
-        from model_api import public_config, save_config, save_keys, model_choices, test_connection, profile_defaults, validate_profile
+        from model_api import public_config, save_config, save_keys, model_choices, test_connection, profile_defaults, validate_profile, zcode_plan_summary
         self.last_access = time.monotonic()
         if method == 'GET' and path == '/v1/status':
             return self.status()
@@ -389,9 +439,83 @@ class Service:
             return self.status(run_id)
         if method == 'GET' and path == '/v1/history':
             return self.history()
+        if method == 'GET' and path.startswith('/v1/diagnosis/'):
+            from library_remedy import diagnose
+            parts = path.removeprefix('/v1/diagnosis/').split('/')
+            if len(parts) != 2 or not re.fullmatch('[A-Z0-9]{8}', parts[1]):
+                raise RequestError('诊断路径必须为 /v1/diagnosis/<run_id>/<item_key>')
+            progress._run_id(parts[0])
+            return diagnose(workflow.RUNS, parts[0], parts[1])
+        if method == 'POST' and path == '/v1/diagnosis':
+            from library_remedy import diagnose
+            object_fields(payload, {'run_id', 'key'})
+            progress._run_id(payload.get('run_id'))
+            if not isinstance(payload.get('key'), str) or not re.fullmatch('[A-Z0-9]{8}', payload['key']):
+                raise RequestError('条目 key 必须为 8 位大写字母/数字')
+            return diagnose(workflow.RUNS, payload['run_id'], payload['key'])
+        if method == 'POST' and path == '/v1/remedy':
+            object_fields(payload, {'run_id', 'key', 'action', 'preview', 'confirm', 'params', 'token'})
+            run_id = progress._run_id(payload.get('run_id'))
+            key = payload.get('key')
+            action = payload.get('action')
+            params = payload.get('params', {})
+            token = payload.get('token')
+            if not isinstance(key, str) or not re.fullmatch('[A-Z0-9]{8}', key):
+                raise RequestError('条目 key 必须为 8 位大写字母/数字')
+            if not isinstance(action, str) or not re.fullmatch('[a-z_]{1,32}', action):
+                raise RequestError('处置动作无效')
+            if not isinstance(params, dict):
+                raise RequestError('处置参数必须是对象')
+            confirm = payload.get('confirm') is True
+            if payload.get('preview') is True and confirm:
+                raise RequestError('预览与确认不能同时选择')
+            if not confirm and payload.get('preview') is not True:
+                raise RequestError('处置需要先预览再明确确认')
+            if workflow.active_controller():
+                raise RequestError('已有同步任务运行；请等待或暂停当前任务后再处置单篇文献')
+            from zotero_local import Client
+            from library_remedy import binding as remedy_binding, remedy
+
+            def run_remedy():
+                return remedy(Client(apply=False), workflow.RUNS, run_id, key, action, params, confirm=confirm, expected_binding=bound_inputs)
+            if payload.get('preview') is True:
+
+                def make_preview():
+                    from library_remedy import binding as compute_binding
+                    before = compute_binding(Client(apply=False), workflow.RUNS, run_id, key, action)
+                    result = remedy(Client(apply=False), workflow.RUNS, run_id, key, action, confirm=False)
+                    result['binding'] = compute_binding(Client(apply=False), workflow.RUNS, run_id, key, action)
+                    if result['binding'] != before:
+                        raise RequestError('预览期间输入变化；请重新预览')
+                    result['token'] = secrets.token_urlsafe(24)
+                    with self.lock:
+                        now = time.monotonic()
+                        self.remedy_previews = {t: (at, value) for t, (at, value) in self.remedy_previews.items() if now - at < PREVIEW_TTL}
+                        if len(self.remedy_previews) >= 32:
+                            self.remedy_previews.pop(next(iter(self.remedy_previews)), None)
+                        self.remedy_previews[result['token']] = (now, result['binding'])
+                    return result
+                return self.submit(make_preview)
+            if not isinstance(token, str) or not token:
+                raise RequestError('确认处置需要先预览取得一次性令牌')
+            with self.lock:
+                now = time.monotonic()
+                stored = self.remedy_previews.get(token)
+                if stored is None:
+                    raise RequestError('预览令牌不存在或已使用；请重新预览后再确认')
+                created, bound_inputs = stored
+                if now - created > PREVIEW_TTL:
+                    del self.remedy_previews[token]
+                    raise RequestError('预览已过期；请重新预览后再确认')
+                del self.remedy_previews[token]
+            fresh = remedy_binding(Client(apply=False), workflow.RUNS, run_id, key, action)
+            if fresh != bound_inputs:
+                raise RequestError('预览已过期：文献字节、模型配置或身份在预览后发生变化；请重新预览')
+            return self.submit(run_remedy)
         if method == 'POST' and path in ('/v1/pause', '/v1/resume'):
             from library_control import request_pause, launch_resume
-            object_fields(payload, {'run_id', 'confirm'} | ({'finalize_only'} if path == '/v1/resume' else set()))
+            fields = {'run_id', 'confirm'} | ({'finalize_only', 'use_saved_model'} if path == '/v1/resume' else set())
+            object_fields(payload, fields)
             run_id = progress._run_id(payload.get('run_id'))
             if payload.get('confirm') is not True:
                 raise RequestError('暂停/继续需要明确点击确认')
@@ -400,9 +524,49 @@ class Service:
             finalize_only = payload.get('finalize_only', False)
             if type(finalize_only) is not bool:
                 raise RequestError('仅收尾选项必须为布尔值')
-            return launch_resume(run_id, finalize_only=finalize_only)
+            use_saved_model = payload.get('use_saved_model', False)
+            if type(use_saved_model) is not bool:
+                raise RequestError('使用已保存模型选项必须为布尔值')
+            if use_saved_model and finalize_only:
+                raise RequestError('仅收尾恢复不运行模型步骤，无需选择模型')
+            return launch_resume(run_id, finalize_only=finalize_only, use_saved_model=use_saved_model)
+        if method == 'POST' and path == '/v1/resume/preview':
+            from library_control import prepare_recovery, prepare_resume
+            object_fields(payload, {'run_id', 'recovery'})
+            run_id = progress._run_id(payload.get('run_id'))
+            recovery = payload.get('recovery', False)
+            if type(recovery) is not bool:
+                raise RequestError('遗留恢复选项必须为布尔值')
+            from zotero_local import Client
+
+            def resume_preview():
+                from model_api import load_config, validate_config
+                prepared = (prepare_recovery if recovery else prepare_resume)(Client(apply=False), run_id)
+                frozen = prepared['original'].get('model_config')
+                saved_summary, saved_ok, saved_error = (None, False, '')
+                try:
+                    saved = load_config()
+                    if saved is not None:
+                        saved_summary = validate_config(saved)
+                        saved_ok = True
+                except Exception as error:
+                    saved_error = safe_error(error)
+                return {'run_id': run_id, 'steps': prepared['steps'], 'needs_action': prepared.get('needs_action', {}), 'evidence': prepared.get('evidence', {}), 'frozen_model_config': frozen, 'saved_model_config': saved_summary, 'saved_model_ok': saved_ok, 'saved_model_error': saved_error, 'recovery': bool(prepared.get('recovery')) or recovery, 'dry_run': True}
+            return self.submit(resume_preview)
+        if method == 'POST' and path == '/v1/recovery':
+            from library_control import launch_resume
+            object_fields(payload, {'run_id', 'confirm', 'use_saved_model'})
+            run_id = progress._run_id(payload.get('run_id'))
+            if payload.get('confirm') is not True:
+                raise RequestError('遗留恢复需要先看预览并明确确认')
+            use_saved_model = payload.get('use_saved_model', False)
+            if type(use_saved_model) is not bool:
+                raise RequestError('使用已保存模型选项必须为布尔值')
+            return launch_resume(run_id, recovery=True, use_saved_model=use_saved_model)
+        if method == 'POST' and path == '/v1/acronyms':
+            return self.save_acronym(payload)
         if method == 'GET' and path == '/v1/config':
-            return {**public_config(), 'profileDefaults': profile_defaults()}
+            return {**public_config(), 'profileDefaults': profile_defaults(), 'zcodePlans': zcode_plan_summary()}
         if method == 'GET' and path == '/v1/mineru':
             from mineru_credentials import public_status
             return public_status()
@@ -459,7 +623,7 @@ class Service:
         if method == 'POST' and path == '/v1/start':
             return self.start(payload)
         if method == 'POST' and path in ('/v1/models', '/v1/test', '/v1/model/test'):
-            fields = {'provider', 'model', 'reasoning_effort', 'effort', 'timeout', 'max_tokens', 'base_url', 'protocol', 'models_url', 'thinking', 'extra_body', 'endpoint_confirmed'}
+            fields = {'provider', 'model', 'reasoning_effort', 'effort', 'timeout', 'max_tokens', 'plan', 'base_url', 'protocol', 'models_url', 'thinking', 'extra_body', 'endpoint_confirmed'}
             test_fields = {'role'} if path != '/v1/models' else {'refresh'}
             object_fields(payload, fields | {'profile'} | test_fields)
             role = payload.get('role', 'qc')
@@ -582,6 +746,8 @@ def serve():
         return 0
     try:
         service = Service()
+        from report_retention import expire_reports
+        next_cleanup = 0.0
         with ThreadingHTTPServer(('127.0.0.1', 0), Handler) as server:
             server.daemon_threads = True
             server.service, server.token = (service, secrets.token_urlsafe(32))
@@ -589,6 +755,9 @@ def serve():
             write_private_manifest(MANIFEST, {'schema': 1, 'host': '127.0.0.1', 'port': server.server_port, 'token': server.token, 'pid': os.getpid()})
             while time.monotonic() - service.last_access < 1800 or any((not f.done() for f in list(service.operations.values()))):
                 server.handle_request()
+                if time.monotonic() >= next_cleanup:
+                    expire_reports(workflow.REPORTS, workflow.RUNS, apply=True)
+                    next_cleanup = time.monotonic() + 24 * 60 * 60
         service.pool.shutdown(wait=False)
         service.catalog_pool.shutdown(wait=False)
     finally:

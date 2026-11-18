@@ -104,6 +104,18 @@ class ActiveTests(Fixture):
 
 
 class SnapshotTests(Fixture):
+    def test_failed_qa_reports_specific_reasons_without_implying_interruption(self):
+        paper = dict(PAPER, exit_code=0, qa={"ok": False, "errors": [
+            {"code": "quote_source", "message": "private diagnostic"},
+            {"code": "translation_marker"}, {"code": "quote_source"}]})
+        view = self.view(status="blocked", monitor_done=True, papers=[paper])
+        note = view["papers"][0]["note"]
+        self.assertIn("英文对照与原文不一致", note)
+        self.assertIn("译文残留内部编号", note)
+        self.assertEqual(note.count("英文对照与原文不一致"), 1)
+        self.assertNotIn("中断", note)
+        self.assertNotIn("private diagnostic", note)
+
     def test_paper_reports_only_known_completion_reason(self):
         paper = dict(PAPER, exit_code=0, qa={"ok": False}, qc_log=[
             "!! qc failed Example: incomplete_completion (finish_reason=length)"])
@@ -424,6 +436,38 @@ class WatchTests(Fixture):
         after = {str(f): (f.read_bytes(), f.stat().st_mtime_ns)
                  for f in self.root.rglob("*") if f.is_file()}
         self.assertEqual(before, after)
+
+
+    def test_legacy_pause_request_offers_evidence_gated_recovery(self):
+        self.put(self.run / "pause_request.json", {"schema": 1})
+        dead = dict(OWNER, pid=OWNER["pid"] + 1)  # a controller that no longer matches
+        self.view(status="blocked", control_schema=1, monitor_done=True, controller=dead,
+                  error="历史受阻")
+        view = p.snapshot(self.runs, RUN, self.library, now=NOW)
+        self.assertTrue(view["can_recover_pause"])
+        # A sealed pause (receipt exists) uses normal resume, not recovery.
+        self.put(self.run / "pause_receipt.json", {"schema": 2})
+        view = p.snapshot(self.runs, RUN, self.library, now=NOW)
+        self.assertFalse(view["can_recover_pause"])
+        (self.run / "pause_receipt.json").unlink()
+        # Already-dispatched or missing evidence explains instead of hiding.
+        self.put(self.run / "resume_dispatch.json", {"run_id": "child"})
+        view = p.snapshot(self.runs, RUN, self.library, now=NOW)
+        self.assertFalse(view["can_recover_pause"])
+        self.assertTrue(any("重新选择这些文献预演" in note or "遗留恢复" in note for note in view["notices"]))
+
+    def test_needs_action_papers_surface_with_reasons(self):
+        self.state.update(status="partial", monitor_done=True, controller=None,
+                          needs_action=[{"key": "ABCD2345", "citekey": "Example2026JPO-Mixing",
+                                         "reasons": ["产物验收未通过：quote_coverage"]}])
+        self.put(self.run / "state.json", self.state)
+        view = p.snapshot(self.runs, RUN, self.library, now=NOW)
+        paper = next(x for x in view["papers"] if x["key"] == "ABCD2345")
+        self.assertEqual(paper["phase"], "attention")
+        self.assertIn("待处理", paper["note"])
+        self.assertEqual(view["needs_action"][0]["key"], "ABCD2345")
+        self.assertTrue(any("待处理" in row["reasons"][0] or "验收" in row["reasons"][0]
+                            for row in view["needs_action"]))
 
 
 @unittest.skipUnless(os.name == "nt", "Windows process identity API")

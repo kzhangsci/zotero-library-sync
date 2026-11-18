@@ -24,15 +24,17 @@ type('bookSection','book','thesis','report','presentation','dataset','webpage','
 
 例如合成条目 `Example2099SYN-Fixture`。这是格式示例，不是任何真实文献或 item key。
 
-`data/reports/journal_acronyms.csv` 初始只有表头，所有尚未配置的 journalArticle 会被
-明确阻塞。必须填写自己的 `title,proposed` 映射：title 应对应 Zotero 的 publicationTitle，
-proposed 使用符合上述格式的字母数字缩写。以下是从零编写的合成示例：
+期刊缩写分两层。随包公共基础表 `app/release/journal_acronyms.base.csv` 收录常见
+海洋/地学期刊（JPO、GRL、JGR、DSR、OS、OM、SciRep、RS、SciData、NC、GMD 等及常见
+拼写变体）到 `title,proposed` 短码的映射；这些短码是**文件名/引用键命名约定，不是
+ISO 4 缩写声明**，来源于公开刊名的整理。个人覆盖表 `data/reports/journal_acronyms.csv`
+初始只有表头：基础表先生效，**个人覆盖优先**（同一刊名以你的行为准），更新版本不会
+批量改名或改写你的映射；覆盖表也兼容带额外列的历史草稿格式（含 `title` 与 `proposed`
+列即可）。同表内同一刊名映射到两个不同短码会显式报错；以 `=`、`+`、`-`、`@` 开头或含
+控制字符的刊名按公式注入拒绝，短码仅限 1–12 位字母数字。
 
-```csv
-title,proposed
-Synthetic Journal of Example Studies,SYN
-```
-
-也可参考 `journal_acronyms.example.csv`；安装器不会把合成行混入正式表。
+预演时未映射的 journalArticle 仍会被明确阻塞并列出刊名；可在面板“期刊缩写快捷补表”
+按刊保存（逗号/引号/Unicode 会正确转义），保存后重新预演。合成示例仅供参考
+（`journal_acronyms.example.csv`），安装器不会把合成行混入任何一张表。
 先配置 BBT v2 与缩写 → 在 Zotero 明确选择一篇 → 设置上限 1 → 预演确认键与附件 →
 解决阻碍后再执行同步。已有作者命名、期刊规范或 pinned 键必须由用户自行决定兼容方式。

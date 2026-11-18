@@ -17,22 +17,26 @@ async function selectSchool(u, phase = "qc") {
   await u.el(phase + "-model").emit("input");
 }
 
-test("school profile keeps exact campus IDs and independent conservative request defaults", () => {
+test("school profile keeps exact campus IDs and independent request defaults (thinking on via effort=high)", () => {
   const p = schoolProfile(); assert.deepEqual(Bridge.profile(p), p);
   assert.equal(p.base_url, "https://agi.tongji.edu.cn/v1");
   assert.equal(p.models_url, "https://agi.tongji.edu.cn/v1/models");
   assert.equal(p.model, "DeepSeek-V4.1-Flash"); assert.equal(p.max_tokens, 32768);
-  assert.equal(p.reasoning_effort, "default"); assert.equal(p.thinking, "default");
+  // User preference 2026-11-17: thinking ON + effort high — Tongji sends no
+  // thinking parameter, so the campus effort level itself is the default.
+  assert.equal(p.reasoning_effort, "high"); assert.equal(p.thinking, "default");
   assert.equal(Bridge.endpointKind(p), "tongji"); assert.equal(Bridge.catalogEndpointKind(p), "tongji");
   assert.equal(Bridge.publicModelDocs(p), false); assert.equal(Bridge.modelMaximum(p), null);
   const help = Bridge.modelParameterHelp(p);
   assert.deepEqual(help.effortLevels, ["none", "low", "high", "xhigh", "max"]);
   assert.equal(help.defaultEffort, "high"); assert.match(help.tokens, /不是.*最大输出/);
   assert.match(help.endpointHelp, /非对话模型/);
+  assert.deepEqual(Bridge.modelRecommended(p), { reasoning_effort: "high", fallback: false });
   assert.deepEqual(Bridge.modelParameterHelp({ ...p, model: "MiMo-V2.6-Flash" }).effortLevels, ["none", "high"]);
   for (const model of ["deepseek-flash", "glm-5.3", "DeepSeek-V4.1-Flash-Unknown"]) {
     assert.deepEqual(Bridge.modelParameterHelp({ ...p, model }).effortLevels, []);
     assert.equal(Bridge.modelMaximum({ ...p, model }), null);
+    assert.equal(Bridge.modelRecommended({ ...p, model }), null);
   }
 });
 
@@ -94,7 +98,7 @@ test("saved school role is preserved on reload and its explicit test retains the
   await u.el("qc-test").emit("click");
   const request = JSON.parse(u.f.posts("/v1/test")[0].body);
   assert.equal(request.provider, "tongji"); assert.equal(request.model, "DeepSeek-V4.1-Flash");
-  assert.equal(request.role, "qc"); assert.equal(request.reasoning_effort, "default");
+  assert.equal(request.role, "qc"); assert.equal(request.reasoning_effort, "high");
   assert.equal(u.window.confirms.length, 0); assert.equal(u.f.posts("/v1/start").length, 0);
   u.controller.close();
 });

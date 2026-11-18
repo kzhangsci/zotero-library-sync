@@ -48,27 +48,27 @@ def _get(client, key: str) -> dict:
 def _children(client, parent: dict) -> list[dict]:
     bundle = client.parent_children(parent['key'])
     if not isinstance(bundle, dict):
-        raise IntakeBlocked(f'invalid parent/children snapshot: {parent['key']}')
+        raise IntakeBlocked(f"invalid parent/children snapshot: {parent['key']}")
     current = _item(bundle.get('parent'), parent['key'])
     if current['version'] != parent['version'] or current['data'] != parent['data']:
-        raise IntakeBlocked(f'parent changed while reading children: {parent['key']}')
+        raise IntakeBlocked(f"parent changed while reading children: {parent['key']}")
     version = bundle.get('library_version')
     if not isinstance(version, int) or isinstance(version, bool) or current['version'] > version:
-        raise IntakeBlocked(f'missing/inconsistent children snapshot version: {parent['key']}')
+        raise IntakeBlocked(f"missing/inconsistent children snapshot version: {parent['key']}")
     raw = bundle.get('children')
     if not isinstance(raw, list):
-        raise IntakeBlocked(f'children response is not a list: {parent['key']}')
+        raise IntakeBlocked(f"children response is not a list: {parent['key']}")
     children = [_item(x) for x in raw]
     if any((x['version'] > version for x in children)):
-        raise IntakeBlocked(f'child newer than snapshot: {parent['key']}')
+        raise IntakeBlocked(f"child newer than snapshot: {parent['key']}")
     expected = parent.get('meta', {}).get('numChildren', parent['data'].get('numChildren'))
     regular = parent['data'].get('itemType') not in {'attachment', 'annotation', 'note'}
     if regular and expected is not None and (len(children) != int(expected)):
-        raise IntakeBlocked(f'incomplete children: {parent['key']} {len(children)} != {expected}')
+        raise IntakeBlocked(f"incomplete children: {parent['key']} {len(children)} != {expected}")
     if len({x['key'] for x in children}) != len(children):
-        raise IntakeBlocked(f'duplicate child keys: {parent['key']}')
+        raise IntakeBlocked(f"duplicate child keys: {parent['key']}")
     if any((x['data'].get('parentItem') != parent['key'] for x in children)):
-        raise IntakeBlocked(f'unexpected child parent: {parent['key']}')
+        raise IntakeBlocked(f"unexpected child parent: {parent['key']}")
     return children
 
 def _pin(parent: dict) -> tuple[bool, str]:
@@ -144,11 +144,11 @@ def _metadata(parent: dict) -> dict:
 def _path(storage: Path, attachment: dict) -> Path:
     d = attachment['data']
     if d.get('linkMode') not in STORED:
-        raise IntakeBlocked(f'unsupported linked attachment: {attachment['key']}')
+        raise IntakeBlocked(f"unsupported linked attachment: {attachment['key']}")
     directory = storage / _name(attachment['key'])
     path = directory / _name(d.get('filename') or '')
     if not path.resolve().is_relative_to(storage.resolve()):
-        raise IntakeBlocked(f'attachment escapes storage: {attachment['key']}')
+        raise IntakeBlocked(f"attachment escapes storage: {attachment['key']}")
     if not path.is_file():
         raise IntakeBlocked(f'missing attachment file: {path}')
     return path
@@ -172,7 +172,7 @@ def _infer(attachment: dict, parent: dict, n_pdfs: int, hints: dict) -> tuple[st
     for secondary, rx in SECONDARY:
         if rx.search(evidence):
             return (secondary, f'_{secondary}{Path(filename).suffix.lower()}')
-    if re.search('(?i)(?:^|[_\\s-])annotated\\d*(?:\\.pdf|$|\\s)', evidence):
+    if re.search('(?i)(?:^|[_\\s-])annot(?:ated|ed)\\d*(?:\\.pdf|$|\\s)', evidence):
         return ('annotated', '_annotated.pdf')
     if role == 'other' and suggestion == 'primary' and (n_pdfs == 1):
         return ('primary', '.pdf')
@@ -227,6 +227,18 @@ def _make_plan(client, key: str, swap: bool, hints: dict | None=None, cache: dic
         plan['storage'] = str(storage)
         attachments = [c for c in children if c['data'].get('itemType') == 'attachment']
         n_pdfs = sum((Path(c['data'].get('filename') or '').suffix.lower() == '.pdf' for c in attachments))
+        resolved_roles, unresolved = ({}, [])
+        for attachment in attachments:
+            try:
+                resolved_roles[attachment['key']] = _infer(attachment, parent, n_pdfs, hints or {})
+            except IntakeBlocked as error:
+                if not str(error).startswith('ambiguous attachment role:'):
+                    raise
+                unresolved.append(attachment)
+        if len(unresolved) == 1 and Path(unresolved[0]['data'].get('filename', '')).suffix.lower() == '.pdf' and (not any((role == 'primary' for role, suffix in resolved_roles.values()))):
+            resolved_roles[unresolved.pop()['key']] = ('primary', '.pdf')
+        if unresolved:
+            raise IntakeBlocked('ambiguous attachment role: ' + ', '.join((at['key'] for at in unresolved)))
         for child in children:
             plan['versions'][child['key']] = child['version']
         for at in attachments:
@@ -237,7 +249,7 @@ def _make_plan(client, key: str, swap: bool, hints: dict | None=None, cache: dic
             plan['annotations'][ak] = anns
             plan['versions'].update({x['key']: x['version'] for x in anns})
             path = _path(storage, at)
-            role, suffix = _infer(at, parent, n_pdfs, hints or {})
+            role, suffix = resolved_roles[ak]
             plan['roles'][ak] = {'role': role, 'suffix': suffix}
             digest = sha256(path)
             plan['hashes'][ak] = digest
@@ -246,12 +258,25 @@ def _make_plan(client, key: str, swap: bool, hints: dict | None=None, cache: dic
                 previous = cache.get(ak, {})
                 scan = copy.deepcopy(previous['scan']) if previous.get('hash') == digest else scan_pdf(str(path), max_draw_pages=0)
                 if scan.get('err') or scan.get('encrypted') or (not scan.get('pages')):
-                    raise IntakeBlocked(f'unreadable/encrypted PDF: {ak}: {scan.get('err')}')
+                    raise IntakeBlocked(f"unreadable/encrypted PDF: {ak}: {scan.get('err')}")
                 if '?err' in scan.get('embed_all_types', ''):
                     raise IntakeBlocked(f'incomplete annotation scan: {ak}')
             want = path_ck + suffix if path_ck and suffix else d['filename']
             row = {'item_key': key, 'citekey': ck, 'att_key': ak, 'filename': d['filename'], 'ext': path.suffix.lower(), 'exists': True, 'size_bytes': path.stat().st_size, 'role': role if d['filename'] == want else 'other', 'role_basis': 'targeted role inference', 'suggested_role': role, 'suggested_name': want if d['filename'] != want else '', 'item_tags': ','.join((t['tag'] for t in parent['data'].get('tags', []))), 'zot_annots': len(anns), 'embed_markup': 0, 'embed_types': '', 'flat_marks': 0, 'path': str(path), 'scan': scan, **scan}
             plan['rows'].append(row)
+        supplements = [r for r in plan['rows'] if plan['roles'][r['att_key']]['role'] == 'supplement']
+        taken = set()
+        for row in sorted(supplements, key=lambda r: (r['filename'] != path_ck + plan['roles'][r['att_key']]['suffix'], r['att_key'])):
+            suffix = plan['roles'][row['att_key']]['suffix']
+            wanted = path_ck + suffix if path_ck else row['filename']
+            number = 2
+            while wanted.casefold() in taken:
+                suffix = f"_supplement{number}{row['ext']}"
+                wanted = path_ck + suffix
+                number += 1
+            taken.add(wanted.casefold())
+            plan['roles'][row['att_key']]['suffix'] = suffix
+            row.update(role='supplement' if row['filename'] == wanted else 'other', suggested_name='' if row['filename'] == wanted else wanted)
         pdfs = [r for r in plan['rows'] if r['ext'] == '.pdf']
         if not pdfs:
             raise IntakeBlocked('no PDF; a clean primary is required')
@@ -289,12 +314,29 @@ def _make_plan(client, key: str, swap: bool, hints: dict | None=None, cache: dic
             if skipped:
                 raise IntakeBlocked('; '.join(skipped))
             plan['actions'] = actions
+            for row in plan['rows']:
+                role = plan['roles'][row['att_key']]['role']
+                if role not in {'primary', 'annotated', 'supplement', 'preprint', 'manuscript', 'translation'}:
+                    continue
+                name = row['suggested_name'] or row['filename']
+                for action in actions:
+                    if action['action'] == 'swap_annotated_primary' and action['attKey'] == row['att_key']:
+                        name = action['annotatedName']
+                title = Path(name).stem
+                original = next((at for at in attachments if at['key'] == row['att_key']))
+                if original['data'].get('title', '') != title:
+                    plan['actions'].append({'action': 'set_attachment_title', 'attKey': row['att_key'], 'newTitle': title, 'newName': name})
+            late_actions = {'move_annotations', 'add_tag', 'remove_tag'}
+            plan['actions'] = [a for a in plan['actions'] if a['action'] not in late_actions] + [a for a in plan['actions'] if a['action'] in late_actions]
         plan['actions_deferred'] = metadata['refresh']
         plan['redo_required'] = _redo(path_ck, Path(source['path']), parent)
         if plan['redo_required'] and (not allow_redo):
             raise IntakeBlocked('redo_required: 正本与已处理来源不同，或旧来源不能确认；请选择文献并勾选“重新检测 / 更换全文 PDF”预演')
     except Exception as exc:
         plan['blocked'].append(f'{type(exc).__name__}: {exc}')
+        match = re.search("missing/unmapped publicationTitle: '?(.+?)'?$", plan['blocked'][-1])
+        if match:
+            plan['unmapped_publication_title'] = match.group(1).strip()[:300]
     return plan
 
 def plan_item(client: Client, key: str, *, swap: bool=False) -> dict:
@@ -412,7 +454,7 @@ def _rename(client, key: str, filename: str, parent: str, digest: str, journal, 
 def _import(client, plan: dict, source: Path, filename: str, title: str, journal) -> dict:
     parent = _get(client, plan['key'])
     children = _children(client, parent)
-    wanted_role = 'annotated' if filename == f'{plan['citekey']}_annotated.pdf' else 'primary'
+    wanted_role = 'annotated' if filename == f"{plan['citekey']}_annotated.pdf" else 'primary'
     matches = []
     for at in children:
         if at['data'].get('itemType') != 'attachment':
@@ -428,10 +470,21 @@ def _import(client, plan: dict, source: Path, filename: str, title: str, journal
         existing_path = _path(zotero_data_dir() / 'storage', matches[0])
         if wanted_role == 'primary' and sha256(existing_path) != sha256(source):
             raise IntakeBlocked('concurrent primary has different content; re-plan')
+        if matches[0]['data'].get('title', '') != title:
+            original = matches[0]
+            digest = sha256(existing_path)
+            journal.write('attachment_title_intent', before=original, title=title)
+            client.patch_item(original['key'], {'title': title}, original['version'])
+            updated = _get(client, original['key'])
+            expected = original['data'] | {'title': title}
+            if any((updated['data'].get(k) != v for k, v in expected.items() if k not in {'version', 'dateModified'})) or sha256(_path(zotero_data_dir() / 'storage', updated)) != digest:
+                raise IntakeBlocked('reused attachment changed during title update')
+            matches[0] = updated
+            journal.write('attachment_title_done', item=updated)
         journal.write('import_reused', item=matches[0])
         return matches[0]
     digest = sha256(source)
-    token = hashlib.sha256(f'library-intake-v1:{plan['key']}:{wanted_role}:{digest}'.encode()).hexdigest()
+    token = hashlib.sha256(f"library-intake-v1:{plan['key']}:{wanted_role}:{digest}".encode()).hexdigest()
     journal.write('import_intent', parent=plan['key'], source=str(source), filename=filename, source_sha256=digest, idempotency_key=token)
     client.import_attachment(plan['key'], str(source), filename, title, token)
     children = _children(client, _get(client, plan['key']))
@@ -511,6 +564,20 @@ def apply_item(client: Client, plan: dict, *, swap: bool=False, allow_redo: bool
                     if kind == 'rename':
                         ak = action['attKey']
                         _rename(client, ak, action['newName'], plan['key'], fresh['hashes'][ak], journal, undo, expected_attachments)
+                    elif kind == 'set_attachment_title':
+                        ak = action['attKey']
+                        before_title, _ = _checked_attachment(client, ak, plan['key'], fresh['hashes'][ak])
+                        if before_title != expected_attachments[ak] or before_title['data']['filename'] != action['newName']:
+                            raise IntakeBlocked(f'attachment changed before title update: {ak}')
+                        journal.write('attachment_title_intent', before=before_title, title=action['newTitle'])
+                        client.patch_item(ak, {'title': action['newTitle']}, before_title['version'])
+                        after_title, _ = _checked_attachment(client, ak, plan['key'], fresh['hashes'][ak])
+                        wanted = before_title['data'] | {'title': action['newTitle']}
+                        if any((after_title['data'].get(k) != v for k, v in wanted.items() if k not in {'version', 'dateModified'})):
+                            raise IntakeBlocked(f'attachment title readback differs: {ak}')
+                        expected_attachments[ak] = after_title
+                        undo.append((before_title, after_title))
+                        journal.write('attachment_title_done', item=after_title)
                     elif kind in {'copy_as_annotated', 'swap_annotated_primary', 'attach_clean_primary'}:
                         ak = action.get('srcAttKey') or action['attKey']
                         current, source = _checked_attachment(client, ak, plan['key'], fresh['hashes'][ak])
@@ -591,6 +658,9 @@ def apply_item(client: Client, plan: dict, *, swap: bool=False, allow_redo: bool
                                 continue
                             journal.write('rename_restore_intent', before=current, filename=original['data']['filename'])
                             client.rename_attachment(original['key'], original['data']['filename'])
+                            restored = _get(client, original['key'])
+                            if restored['data'].get('title', '') != original['data'].get('title', ''):
+                                client.patch_item(original['key'], {'title': original['data'].get('title', '')}, restored['version'])
                 journal.write('recovery', result=result)
     except Exception as exc:
         result['blocked'].append(f'{type(exc).__name__}: {exc}')

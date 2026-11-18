@@ -172,12 +172,16 @@ def _papers(state):
                 existing.update(values)
     return merged
 
-def _paper_view(paper, state, library, started, now, terminal):
+def _paper_view(paper, state, library, started, now, terminal, needs_action=None):
     qa = paper.get('qa')
     if qa is not None and (not isinstance(qa, dict)):
         raise ProgressError('文献 QA 状态损坏')
     accepted = isinstance(qa, dict) and qa.get('ok') is True and (type(paper.get('exit_code')) is int) and (paper['exit_code'] == 0)
     phase, source, stamp, note = ('pending', 'none', None, '')
+    pending_reasons = (needs_action or {}).get(paper.get('key'), {}).get('reasons')
+    if pending_reasons and (not accepted):
+        phase, source = ('attention', 'needs_action')
+        note = '已转入待处理：' + '；'.join((str(x) for x in pending_reasons[:4]))
     if accepted:
         phase, source = ('validated', 'qa')
     elif paper.get('exit_code') == 75 or paper.get('progress_phase') == 'paused':
@@ -185,6 +189,12 @@ def _paper_view(paper, state, library, started, now, terminal):
     elif paper.get('blocked') or paper.get('status') in ('blocked', 'failed') or (isinstance(qa, dict) and qa.get('ok') is False) or (paper.get('exit_code') is not None and paper['exit_code'] != 0) or (paper.get('progress_phase') == 'failed'):
         phase, source = ('failed', 'state')
         note = '本篇尚未通过验收；请查看报告。'
+        if isinstance(qa, dict) and qa.get('ok') is False:
+            reasons = {'quote_coverage': '中英文对照覆盖不一致', 'quote_source': '英文对照与原文不一致', 'translation_marker': '译文残留内部编号', 'translation_empty': '译文或子图标签缺失', 'structure_coverage': '中英文段落结构不一致', 'image_coverage': '图片数量或引用不一致'}
+            codes = list(dict.fromkeys((e.get('code') for e in qa.get('errors', []) if isinstance(e, dict))))
+            labels = [reasons[code] for code in codes if code in reasons]
+            if labels:
+                note = '验收未通过，' + '、'.join(labels) + '。请查看报告。'
         for line in reversed(paper.get('qc_log') or []):
             if not isinstance(line, str):
                 continue
@@ -229,7 +239,7 @@ def _paper_view(paper, state, library, started, now, terminal):
                     phase, stamp = ('pending', None)
         if paper.get('exit_code') == 0 and phase == 'pending':
             note = 'worker 已退出，等待 QA 验收记录。'
-    if terminal and (not accepted):
+    if terminal and (not accepted) and (not (isinstance(qa, dict) and qa.get('ok') is False)):
         note = '任务已结束或中断，本篇尚未验收。' + note
     return {'key': _clean(paper.get('key')), 'citekey': _clean(paper.get('citekey')), 'title': _clean(paper.get('title')), 'accepted': accepted, 'phase': phase, 'phase_label': LABELS[phase], 'elapsed_seconds': _elapsed(stamp, now), 'phase_elapsed_seconds': _elapsed(stamp, now), 'source': source, 'note': note}
 
@@ -316,9 +326,14 @@ def snapshot(runs, run_id, library, now=None):
         end = _timestamp(state.get('finished'))
     end = min(current, end) if end is not None else current
     papers = []
+    needs_rows = state.get('needs_action')
+    needs_action = {row.get('key'): row for row in needs_rows if isinstance(row, dict)} if isinstance(needs_rows, list) else {}
     for paper in _papers(state):
         try:
-            papers.append(_paper_view(paper, state, library, started, end, terminal))
+            if paper.get('key') and (Path(runs) / run_id / f"remedy_baseline_{paper['key']}.json").is_file():
+                from library_remedy import _effective_paper
+                paper = _effective_paper(runs, run_id, paper, library=library)
+            papers.append(_paper_view(paper, state, library, started, end, terminal, needs_action))
         except (ProgressError, OSError):
             papers.append({'key': _clean(paper.get('key')), 'citekey': _clean(paper.get('citekey')), 'title': _clean(paper.get('title')), 'accepted': False, 'phase': 'attention', 'phase_label': LABELS['attention'], 'elapsed_seconds': None, 'phase_elapsed_seconds': None, 'source': 'state_error', 'note': '本篇状态不可读；其他文献及服务连接不受影响，请查看报告。'})
             notices.append('一篇文献的状态读取需要检查。')
@@ -345,12 +360,15 @@ def snapshot(runs, run_id, library, now=None):
     can_finalize = bool(not alive and status in ('blocked', 'attention') and papers and (accepted == len(papers)) and (state.get('finalize_phase') in (None, 'preflight', 'snapshot', 'index_stage')) and (not any((state.get(k) for k in ('library_commit', 'tools_commit', 'index_backup')))))
     if not alive and status in ('blocked', 'attention') and papers and (accepted == len(papers)) and (state.get('control_schema') == 1) and state.get('published_indexes') and (state.get('finalize', {}).get('commit_paths') is not None) and (state.get('finalize_phase') in ('indexes_published', 'library_commit_started', 'finalized')):
         can_finalize = True
+    can_recover_pause = bool(not alive and done and (state.get('control_schema') == 1) and (status == 'blocked') and (not state.get('finalize_phase')) and (not state.get('resume_of')) and (not state.get('worker_resume_of')) and (runs / run_id / 'pause_request.json').is_file() and (not (runs / run_id / 'pause_receipt.json').is_file()) and (not (runs / run_id / 'resume_dispatch.json').is_file()))
     if pause_requested and alive and (not terminal):
         status = 'pause_requested'
         notices.append('暂停请求已保存；当前步骤结束并释放工作锁后才可安全关机。')
+    if pause_requested and (not alive) and (status == 'blocked') and (not can_recover_pause) and (not state.get('pause_receipt')):
+        notices.append('该任务请求过暂停但缺少可核验的暂停凭据且不满足遗留恢复条件；可在“同步”页重新选择这些文献预演（不覆盖现有产物），或查看报告处理。')
     if status == 'paused' and alive:
         notices.append('工作步骤已停止，控制器正在释放资源；请等待退出后再关机或继续。')
-    return {'id': run_id, 'status': status, 'status_text': LABELS.get(status, '需要处理'), 'terminal': terminal, 'owner_alive': alive, 'monitor_done': done, 'elapsed_seconds': _elapsed(started, end), 'phase': phase, 'phase_label': LABELS.get(phase, '等待/准备'), 'phase_elapsed_seconds': _elapsed(state.get('phase_started'), end), 'papers': papers, 'accepted': accepted, 'total': len(papers), 'index_status': indexes, 'git_status': git, 'report': _clean(state.get('report'), 1024), 'notices': notices, 'error': _clean(state.get('error'), 2048), 'started': state.get('started'), 'finished': state.get('finished'), 'pause_requested': pause_requested, 'can_pause': can_pause, 'can_resume': can_resume, 'can_resume_finalize': can_finalize, 'safe_to_shutdown': bool(status == 'paused' and done and (not alive)), 'model_config': state.get('model_config', {})}
+    return {'id': run_id, 'status': status, 'status_text': LABELS.get(status, '需要处理'), 'terminal': terminal, 'owner_alive': alive, 'monitor_done': done, 'elapsed_seconds': _elapsed(started, end), 'phase': phase, 'phase_label': LABELS.get(phase, '等待/准备'), 'phase_elapsed_seconds': _elapsed(state.get('phase_started'), end), 'papers': papers, 'accepted': accepted, 'total': len(papers), 'index_status': indexes, 'git_status': git, 'report': _clean(state.get('report'), 1024), 'notices': notices, 'error': _clean(state.get('error'), 2048), 'started': state.get('started'), 'finished': state.get('finished'), 'pause_requested': pause_requested, 'can_pause': can_pause, 'can_resume': can_resume, 'can_resume_finalize': can_finalize, 'can_recover_pause': can_recover_pause, 'needs_action': [{'key': _clean(row.get('key')), 'citekey': _clean(row.get('citekey')), 'reasons': [_clean(x, 300) for x in row.get('reasons') or []][:6]} for row in (needs_rows if isinstance(needs_rows, list) else []) if isinstance(row, dict)], 'safe_to_shutdown': bool(status == 'paused' and done and (not alive)), 'model_config': state.get('model_config', {})}
 
 def _duration(value):
     if value is None:
@@ -361,12 +379,12 @@ def _duration(value):
     return f'{hours}小时{minutes:02d}分{seconds:02d}秒' if hours else f'{minutes}分{seconds:02d}秒'
 
 def render(view):
-    lines = [f'文献同步进度（只读）  任务 id：{_clean(view['id'])}', f'状态：{_clean(view['status_text'])}  总耗时：{_duration(view['elapsed_seconds'])}', f'阶段：{_clean(view['phase_label'])}  阶段耗时：{_duration(view['phase_elapsed_seconds'])}', f'验收：{view['accepted']}/{view['total']}']
+    lines = [f"文献同步进度（只读）  任务 id：{_clean(view['id'])}", f"状态：{_clean(view['status_text'])}  总耗时：{_duration(view['elapsed_seconds'])}", f"阶段：{_clean(view['phase_label'])}  阶段耗时：{_duration(view['phase_elapsed_seconds'])}", f"验收：{view['accepted']}/{view['total']}"]
     for paper in view['papers']:
-        lines.append(f'  {_clean(paper['citekey'] or paper['key'])}：{_clean(paper['phase_label'])} | 阶段耗时：{_duration(paper['elapsed_seconds'])}' + (' | 已验收' if paper['accepted'] else ' | 未验收'))
+        lines.append(f"  {_clean(paper['citekey'] or paper['key'])}：{_clean(paper['phase_label'])} | 阶段耗时：{_duration(paper['elapsed_seconds'])}" + (' | 已验收' if paper['accepted'] else ' | 未验收'))
         if paper.get('note'):
             lines.append('    ' + _clean(paper['note']))
-    lines += [f'索引：{_clean(view['index_status'])}', f'Git：{_clean(view['git_status'])}', f'报告路径：{_clean(view.get('report'), 1024) or '尚未记录'}']
+    lines += [f"索引：{_clean(view['index_status'])}", f"Git：{_clean(view['git_status'])}", f"报告路径：{_clean(view.get('report'), 1024) or '尚未记录'}"]
     lines.extend(('提示：' + _clean(note) for note in view.get('notices', [])))
     if view['terminal']:
         lines.append('本次任务已结束，可关闭窗口；用 -Status 或 -Watch 查看此结果。受阻任务不会自动重试。')
