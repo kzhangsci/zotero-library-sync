@@ -20,7 +20,7 @@ jobs:
         with:
           python-version: '3.13'
       - name: Acquire official matching sources
-        run: python -B release/collect_sources.py --bootstrap-mupdf
+        run: python -B release/collect_sources.py
       - uses: actions/upload-artifact@v4
         with:
           name: beta16-corresponding-sources

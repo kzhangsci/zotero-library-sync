@@ -19,9 +19,9 @@
     },
     {
       "path": "tools/test_macos_install.py",
-      "input_sha256": "6825cb4774a5dd0941e06e924321cdcf9f29a0a32060b0401b715dd94aab15f3",
-      "sha256": "6825cb4774a5dd0941e06e924321cdcf9f29a0a32060b0401b715dd94aab15f3",
-      "bytes": 3498,
+      "input_sha256": "d03550dc944ff345e25affbbb9c83e41d02ddae152b4039c1f1e82349d90302a",
+      "sha256": "d03550dc944ff345e25affbbb9c83e41d02ddae152b4039c1f1e82349d90302a",
+      "bytes": 3515,
       "transformed": false
     },
     {
@@ -40,9 +40,9 @@
     },
     {
       "path": ".github/workflows/beta16-sources.yml",
-      "input_sha256": "2d591c4c266d22f44775ffc8fac92140d2f07b05ad298ff9391f088b461b4399",
-      "sha256": "2d591c4c266d22f44775ffc8fac92140d2f07b05ad298ff9391f088b461b4399",
-      "bytes": 846,
+      "input_sha256": "d404d8c824dc791c2f78a73f8042a5d492af430c4e3c1fd2518cc9e598d01863",
+      "sha256": "d404d8c824dc791c2f78a73f8042a5d492af430c4e3c1fd2518cc9e598d01863",
+      "bytes": 828,
       "transformed": false
     },
     {
@@ -180,7 +180,7 @@
     },
     {
       "path": "tools/library_progress.py",
-      "input_sha256": "6d11c1c0f436f46fdc7113c8d5982c268bbe2cdab65ed569c15bb8f194b1e85d",
+      "input_sha256": "bebae99c1797fea95b650360333cb57525906183f5ffc1e21a0513c0abafe16c",
       "sha256": "f0d4977b745b96648030ca1fa4883271accf1b51bcb4cde97c78db19c7a4395b",
       "bytes": 27903,
       "transformed": true
@@ -201,7 +201,7 @@
     },
     {
       "path": "tools/library_sync.py",
-      "input_sha256": "ce8d4cb373b97ab4eaa76070c218af8533507bb62552b2125479b203efa9f981",
+      "input_sha256": "9aecb08df96d537f53d8bdad3a218376503827f9f4acbdcb1b664e86e38aa3e6",
       "sha256": "e4021c6599582fbb913f29a19fe2527b0c7971bb2fd620e3b347c57c67c78da5",
       "bytes": 71884,
       "transformed": true
@@ -558,9 +558,9 @@
     },
     {
       "path": "release/README.md",
-      "input_sha256": "3a3e7801b0b752239aa9afe9abdd1dbb9445fa09e31ccdc2a4e1f4ef632ec745",
-      "sha256": "3a3e7801b0b752239aa9afe9abdd1dbb9445fa09e31ccdc2a4e1f4ef632ec745",
-      "bytes": 14182,
+      "input_sha256": "a042e3faf32d7f7a108f6a90477982d19da847454b603d5147c818456a8e628c",
+      "sha256": "a042e3faf32d7f7a108f6a90477982d19da847454b603d5147c818456a8e628c",
+      "bytes": 14187,
       "transformed": false
     },
     {
@@ -586,9 +586,9 @@
     },
     {
       "path": "release/install_macos.py",
-      "input_sha256": "cb425d63f0578a41651b4152707c84ec55b74ef550247d83663d238b2544709a",
-      "sha256": "cb425d63f0578a41651b4152707c84ec55b74ef550247d83663d238b2544709a",
-      "bytes": 3133,
+      "input_sha256": "72defd4954aa3aff03ab5647c4cb2a7c53c66657241eab71b27c1234f6863a14",
+      "sha256": "72defd4954aa3aff03ab5647c4cb2a7c53c66657241eab71b27c1234f6863a14",
+      "bytes": 3136,
       "transformed": false
     },
     {
@@ -628,9 +628,9 @@
     },
     {
       "path": "release/third-party-sources.lock.json",
-      "input_sha256": "de3568d7cbe534dd0777c5da3023547b997b602a324afe409ff6d3650d6138ce",
-      "sha256": "de3568d7cbe534dd0777c5da3023547b997b602a324afe409ff6d3650d6138ce",
-      "bytes": 2954,
+      "input_sha256": "6ac6f1af2e4a6315969cdbe2e3463a3ba7172f063e3b8f5f5ab8682d938af3ad",
+      "sha256": "6ac6f1af2e4a6315969cdbe2e3463a3ba7172f063e3b8f5f5ab8682d938af3ad",
+      "bytes": 3016,
       "transformed": false
     },
     {
@@ -642,9 +642,9 @@
     },
     {
       "path": "release/BUILD.md",
-      "input_sha256": "eeb519193db8276e182ab15af68f7a29b130de0681766993b8117d079863e4b3",
-      "sha256": "eeb519193db8276e182ab15af68f7a29b130de0681766993b8117d079863e4b3",
-      "bytes": 4014,
+      "input_sha256": "d0e7304ae084ade6cb5a93004ccf1aa0e2265562adb4cc9763251cf85db3ca66",
+      "sha256": "d0e7304ae084ade6cb5a93004ccf1aa0e2265562adb4cc9763251cf85db3ca66",
+      "bytes": 4040,
       "transformed": false
     },
     {

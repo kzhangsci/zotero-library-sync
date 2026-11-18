@@ -47,7 +47,7 @@ def main(argv=None):
         receipt = Path(args.install_dir)/"INSTALL_RECEIPT.json"
         result["runtime_ready"] = False
         receipt.write_text(json.dumps(result, indent=2), encoding="utf-8")
-        venv.EnvBuilder(with_pip=True, copies=True).create(app/"runtime")
+        venv.EnvBuilder(with_pip=True, symlinks=False).create(app/"runtime")
         python = app/"runtime/bin/python3"
         subprocess.run([str(python), "-m", "pip", "--isolated", "install", "--no-index",
                         "--find-links", str(app/"release/macos-wheels"), "--require-hashes",

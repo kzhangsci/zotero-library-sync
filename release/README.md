@@ -108,7 +108,7 @@ Library 中的 `resources/glossary.md` 初始是空术语表，不包含原作�
 文件 SHA-256；`source.sha256` 覆盖源码包文件；`SHA256SUMS.txt` 覆盖发行 ZIP/XPI。
 Windows 包另有 `app/FILES.json` 和 `bundle.sha256`。
 
-参考 [BUILD.md](BUILD.md)、[PRIVACY.md](PRIVACY.md)、[LICENSE_PENDING.md](LICENSE_PENDING.md)
+参考 [BUILD.md](BUILD.md)、[PRIVACY.md](PRIVACY.md)、[发行许可说明](DISTRIBUTION_LICENSE.md)
 及 [第三方对应源码获取指引](THIRD_PARTY_SOURCE_GUIDE.md)。
 
 ## 更换全文与模型参数

@@ -49,9 +49,9 @@ class MacInstallTests(unittest.TestCase):
     def test_apply_uses_offline_hashed_wheels_and_records_runtime(self):
         with tempfile.TemporaryDirectory() as td:
             root=Path(td);source=self.bundle(root);target=root/'install';app=target/'app';app.mkdir(parents=True)
-            with patch.object(installer,'prerequisites'),patch.object(installer,'install',return_value={'app':str(app)}),patch.object(installer.venv,'EnvBuilder') as env,patch.object(installer.subprocess,'run') as run:
+            with patch.object(installer,'prerequisites'),patch.object(installer,'install',return_value={'app':str(app)}),patch.object(installer.venv,'EnvBuilder',autospec=True) as env,patch.object(installer.subprocess,'run') as run:
                 installer.main(self.args(source,target)+['--apply'])
-                self.assertTrue(env.call_args.kwargs['copies'])
+                self.assertFalse(env.call_args.kwargs['symlinks'])
                 command=run.call_args_list[0].args[0]
                 self.assertIn('--no-index',command);self.assertIn('--require-hashes',command)
                 self.assertIn('--only-binary=:all:',command)
